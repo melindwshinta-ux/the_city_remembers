@@ -1,0 +1,17 @@
+[project]
+name = "the-city-remembers"
+version = "0.1.0"
+description = "The City Remembers — Systemic Narrative RPG & Living-World Simulation"
+requires-python = ">=3.11"
+dependencies = [
+    "textual",
+    "rich",
+    "pytest",
+    "pytest-asyncio",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
