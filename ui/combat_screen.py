@@ -7,17 +7,29 @@ from typing import Any
 
 def render_combat_view(game_session: Any) -> str:
     """Render tactical battlefield grid, commands, and initiative."""
-    combat_sys = game_session.combat_system
+    combat_sys = getattr(game_session, "combat_system", None)
     enc = getattr(combat_sys, "active_encounter", None)
-    if not enc:
-        from entities.character import Character
-        party = [game_session.world.player]
-        enemies = [Character(id="npc_voss", name="Captain Voss", age=38)]
-        enc = combat_sys.create_encounter(party, enemies)
+    if enc is None:
+        status_line = "Status: No active combat encounter (Tactical Preview)"
+        player = getattr(getattr(game_session, "world", None), "player", None)
+        if player is not None:
+            from entities.character import Character
+            from systems.combat_system import Encounter
 
-    grid_str = enc.render_ascii_grid()
+            preview = Encounter(
+                party=[player],
+                enemies=[Character(id="npc_voss", name="Captain Voss", age=38)],
+            )
+            grid_str = preview.render_ascii_grid()
+        else:
+            grid_str = "\n".join(" ".join("[ . ]" for _ in range(5)) for _ in range(5))
+    else:
+        status_line = "Status: Active Combat Encounter"
+        grid_str = enc.render_ascii_grid()
+
     lines = [
         "=== TACTICAL BATTLEFIELD ===",
+        status_line,
         grid_str,
         "",
         "Available Command Categories:",

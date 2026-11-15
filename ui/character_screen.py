@@ -12,14 +12,35 @@ def render_character_view(game_session: Any, view: str = "character") -> str:
         return render_party_view(game_session)
 
     player = getattr(world, "player", None)
+    attrs = getattr(player, "attributes", {}) or {} if player else {}
+    attr_str = (
+        ", ".join(f"{k.replace('_', ' ').title()} {float(v):.0f}" for k, v in attrs.items())
+        if attrs
+        else "None recorded"
+    )
+    pers = getattr(player, "personality", {}) or {} if player else {}
+    pers_str = (
+        ", ".join(f"{k.replace('_', ' ').title()} {float(v):.0f}" for k, v in pers.items())
+        if pers
+        else "Neutral"
+    )
+    skills = getattr(player, "skills", {}) or {} if player else {}
+    needs = getattr(player, "needs", {}) or {} if player else {}
+
     lines = [
         f"=== CHARACTER PROFILE: {player.name if player else 'Rowan'} ===",
         f"Age: {getattr(player, 'age', 28)} | Status: {getattr(player, 'status', 'alive')}",
-        "Attributes: Strength 75, Dexterity 80, Agility 75, Endurance 70",
-        "Personality: Courage 80, Ambition 75, Loyalty 70, Compassion 60",
-        f"Needs: Hunger {player.needs.get('hunger', 90):.0f}%, Fatigue {player.needs.get('fatigue', 90):.0f}%" if player and player.needs else "",
-        f"Memories Recorded: {len(getattr(player, 'memories', []))}",
+        f"Attributes: {attr_str}",
+        f"Personality: {pers_str}",
     ]
+    if skills:
+        skill_str = ", ".join(f"{k.replace('_', ' ').title()} {float(v):.0f}" for k, v in skills.items())
+        lines.append(f"Skills: {skill_str}")
+    if needs:
+        lines.append(
+            f"Needs: Hunger {float(needs.get('hunger', 90)):.0f}%, Fatigue {float(needs.get('fatigue', 90)):.0f}%, Wealth {float(needs.get('wealth', 0)):.0f}g"
+        )
+    lines.append(f"Memories Recorded: {len(getattr(player, 'memories', []))}")
     return "\n".join(lines)
 
 

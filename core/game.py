@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import re
 import uuid
 from pathlib import Path
@@ -10,14 +11,17 @@ from typing import Any
 from ai.faction_ai import FactionAI
 from config import FREQ_FACTION_DECISIONS
 from content import populate_world
+from content.prologue import get_inspect_clue
 from core.clock import WorldClock
 from core.event_bus import EventBus, EventPriority, GameEvent
 from core.random_generator import SeededRNG
 from core.simulation import SimulationEngine
+from core.tutorial import TutorialManager
 from core.world import World
+from entities.character import Memory
 from entities.quest import Quest
 from persistence.database import Database
-from persistence.save_manager import SaveManager
+from persistence.save_manager import SaveError, SaveManager, SaveNotFoundError
 from systems.character_system import CharacterSystem
 from systems.combat_system import CombatSystem
 from systems.economy_system import EconomySystem
@@ -94,6 +98,58 @@ class Game:
                 self.faction_ai.process_faction_turn(fac, world=w)
 
         self.simulation.register_system(FREQ_FACTION_DECISIONS, _faction_tick, name="faction_ai")
+        self.tutorial = TutorialManager(self.world)
+        self._rebind_world(self.world)
+
+    def _rebind_world(self, world: World) -> None:
+        """Rebind Game, all 11 systems, SimulationEngine, FactionAI, and TutorialManager to `world`."""
+        self.world = world
+        for sys_name in (
+            "character_system", "memory_system", "relationship_system", "health_system",
+            "equipment_system", "combat_system", "nemesis_system", "faction_system",
+            "quest_system", "rumor_system", "economy_system",
+        ):
+            sys_obj = getattr(self, sys_name)
+            sys_obj.world = world
+            sys_obj.event_bus = world.event_bus
+            sys_obj.clock = world.clock
+            setattr(world, sys_name, sys_obj)
+
+        self.simulation.world = world
+        self.faction_ai.world = world
+        self.faction_ai.event_bus = world.event_bus
+        self.faction_ai.clock = world.clock
+        self.faction_ai.rng = world.rng
+        self.tutorial.world = world
+
+    # ------------------------------------------------------------------
+    # Prologue & Tutorial Delegate API (PROJECT.md Interface Contracts)
+    # ------------------------------------------------------------------
+    def _sync_tutorial_world(self) -> TutorialManager:
+        if self.tutorial.world is not self.world:
+            self.tutorial.world = self.world
+        return self.tutorial
+
+    def get_prologue_state(self) -> dict[str, Any]:
+        return self._sync_tutorial_world().get_prologue_state()
+
+    def advance_prologue(self, choice_id: str | None = None) -> dict[str, Any]:
+        return self._sync_tutorial_world().advance_prologue(choice_id=choice_id)
+
+    def skip_prologue(self) -> dict[str, Any]:
+        return self._sync_tutorial_world().skip_prologue()
+
+    def replay_prologue(self) -> dict[str, Any]:
+        return self._sync_tutorial_world().replay_prologue()
+
+    def get_tutorial_state(self) -> dict[str, Any]:
+        return self._sync_tutorial_world().get_tutorial_state()
+
+    def skip_tutorial(self) -> dict[str, Any]:
+        return self._sync_tutorial_world().skip_tutorial()
+
+    def reset_tutorial(self) -> dict[str, Any]:
+        return self._sync_tutorial_world().reset_tutorial()
 
     def parse_command(self, raw_input: str) -> dict[str, Any]:
         """Resolve raw string command and aliases to canonical dict with stable IDs (GDD Section 16)."""
@@ -116,6 +172,11 @@ class Game:
             "voss": "npc_voss",
             "sergeant merek": "npc_merek",
             "merek": "npc_merek",
+            "gregor": "npc_gregor",
+            "brant": "npc_trader_brant",
+            "malakor": "npc_boss_malakor",
+            "karn": "npc_gang_karn",
+            "ren": "npc_thief_ren",
             "city guard": "city_guard",
             "city_guard": "city_guard",
             "syndicate": "lowtown_syndicate",
@@ -131,10 +192,46 @@ class Game:
 
         def resolve_target(name: str) -> str:
             cleaned = name.lower().strip()
-            for k, v in target_map.items():
-                if k == cleaned or k in cleaned:
-                    return v
-            return cleaned.replace(" ", "_")
+            if not cleaned:
+                return ""
+            cleaned_id = cleaned.replace(" ", "_")
+
+            # 1. Exact ID match in world registries
+            for registry in (
+                self.world.locations,
+                self.world.characters,
+                self.world.districts,
+                self.world.factions,
+                self.world.items,
+            ):
+                if cleaned in registry:
+                    return cleaned
+                if cleaned_id in registry:
+                    return cleaned_id
+
+            # 2. Exact key match in target_map
+            if cleaned in target_map:
+                return target_map[cleaned]
+            if cleaned_id in target_map:
+                return target_map[cleaned_id]
+
+            # 3. Exact case-insensitive .name match in world entities
+            for registry in (
+                self.world.locations,
+                self.world.characters,
+                self.world.districts,
+                self.world.factions,
+            ):
+                for eid, obj in registry.items():
+                    if getattr(obj, "name", "").lower() == cleaned:
+                        return eid
+
+            # 4. Longest-key word-boundary match fallback in target_map
+            for k in sorted(target_map.keys(), key=len, reverse=True):
+                if re.search(rf"(?<!\w){re.escape(k)}(?!\w)", cleaned):
+                    return target_map[k]
+
+            return cleaned_id
 
         # 1. Talk / Speak
         if verb in ("talk", "speak", "converse"):
@@ -219,17 +316,71 @@ class Game:
         # Tactical commands: aim captain voss left_leg
         if verb == "aim":
             parts = arg_str.rsplit(maxsplit=1)
-            target_name = parts[0] if len(parts) > 1 else "npc_voss"
-            body_part = parts[1] if len(parts) > 1 else "left_leg"
+            if len(parts) > 1:
+                target_name, body_part = parts[0], parts[1]
+            elif len(parts) == 1 and parts[0]:
+                target_name, body_part = parts[0], "left_leg"
+            else:
+                target_name, body_part = "npc_voss", "left_leg"
             return {"action": "aim", "actor": "player", "target": resolve_target(target_name), "target_part": body_part, "body_part": body_part}
 
         # Support commands: apply bandage marcus left_arm
         if verb == "apply" and "bandage" in arg_str:
             clean = arg_str.replace("bandage", "").strip()
             parts = clean.rsplit(maxsplit=1)
-            target_name = parts[0] if len(parts) > 1 else "comp_marcus"
-            body_part = parts[1] if len(parts) > 1 else "left_arm"
+            if len(parts) > 1:
+                target_name, body_part = parts[0], parts[1]
+            elif len(parts) == 1 and parts[0]:
+                target_name, body_part = parts[0], "left_arm"
+            else:
+                target_name, body_part = "comp_marcus", "left_arm"
             return {"action": "apply_bandage", "actor": "player", "target": resolve_target(target_name), "body_part": body_part}
+
+        # Scenario approach choice: choose / resolve <approach>
+        if verb in ("choose", "resolve"):
+            approach_aliases = {
+                "guard": "support_city_guard",
+                "city_guard": "support_city_guard",
+                "city guard": "support_city_guard",
+                "support_city_guard": "support_city_guard",
+                "syndicate": "support_syndicate",
+                "lowtown_syndicate": "support_syndicate",
+                "support_syndicate": "support_syndicate",
+                "independent": "investigate_independently",
+                "investigate": "investigate_independently",
+                "investigate_independently": "investigate_independently",
+                "exploit": "exploit_situation",
+                "exploit_situation": "exploit_situation",
+            }
+            cleaned = arg_str.strip()
+            approach = approach_aliases.get(cleaned, cleaned.replace(" ", "_"))
+            return {"action": "choose_approach", "actor": "player", "target": approach, "approach": approach}
+
+        # Prologue commands
+        if verb == "skip" and arg_str.strip() == "prologue":
+            return {"action": "skip_prologue", "actor": "player"}
+        if verb == "replay" and arg_str.strip() == "prologue":
+            return {"action": "replay_prologue", "actor": "player"}
+        if verb == "skip" and arg_str.strip() == "tutorial":
+            return {"action": "tutorial_skip", "actor": "player"}
+        if verb == "prologue":
+            sub = arg_str.strip()
+            if sub == "skip":
+                return {"action": "skip_prologue", "actor": "player"}
+            if sub == "replay":
+                return {"action": "replay_prologue", "actor": "player"}
+            if sub in ("", "next", "continue"):
+                return {"action": "prologue", "actor": "player", "choice_id": None}
+            return {"action": "prologue", "actor": "player", "choice_id": sub.replace(" ", "_")}
+
+        # Tutorial commands
+        if verb == "tutorial":
+            sub = arg_str.strip()
+            if sub == "skip":
+                return {"action": "tutorial_skip", "actor": "player"}
+            if sub == "reset":
+                return {"action": "tutorial_reset", "actor": "player"}
+            return {"action": "tutorial_status", "actor": "player"}
 
         # Persistence / UI commands
         if verb in ("save", "load", "chronicle"):
@@ -269,7 +420,8 @@ class Game:
             if not target_char:
                 return fail(f"No character found matching '{target_id}'.")
             time_to_advance = 15
-            msg = f"You confer with {target_char.name}."
+            dialogue = self.get_dialogue(target_id)
+            msg = f'You confer with {target_char.name}: "{dialogue}"'
 
         elif action == "inspect":
             target_id = cmd_dict.get("target", "")
@@ -283,7 +435,42 @@ class Game:
             if not target_id or not exists:
                 return fail(f"Nothing found to inspect matching '{target_id}'.")
             time_to_advance = 5
-            msg = f"You closely inspect {target_id}."
+            msg = get_inspect_clue(target_id, world=self.world)
+            if target_id == "lowtown_market":
+                self.world.flags["crime_scene_inspected"] = True
+                if self.world.player and not any(
+                    getattr(m, "id", None) == "mem_lowtown_crime_scene"
+                    for m in self.world.player.memories
+                ):
+                    self.world.player.memories.append(
+                        Memory(
+                            id="mem_lowtown_crime_scene",
+                            event_type="CRIME_SCENE_INSPECTED",
+                            participants=["player"],
+                            description="Examined the slain merchant's cart in Cobblestone Market and found muddy bootprints and a torn Guard wax seal.",
+                            location_id="lowtown_market",
+                            importance=0.8,
+                            emotional_valence=-0.1,
+                            confidence=1.0,
+                            created_at=int(self.world.clock.total_minutes),
+                            emotion="curiosity",
+                            character_id=self.world.player.id,
+                            source_type="witnessed",
+                        )
+                    )
+                q_blood = self.world.quests.get("quest_blood_in_lowtown")
+                if q_blood:
+                    for obj in q_blood.objectives:
+                        if obj.get("id") == "investigate_crime_scene":
+                            obj["completed"] = True
+
+        elif action == "choose_approach":
+            approach = str(cmd_dict.get("approach") or cmd_dict.get("target") or "")
+            res = self.resolve_scenario_approach(approach)
+            if not res.get("success"):
+                return fail(res.get("message", f"Could not resolve approach '{approach}'."))
+            time_to_advance = 15
+            msg = str(res.get("message", f"Resolved Blood in Lowtown via {approach}."))
 
         elif action in ("attack", "aim"):
             target_id = cmd_dict.get("target", "")
@@ -338,13 +525,19 @@ class Game:
             msg = f"You traveled to {target_id}."
 
         elif action == "rest":
-            time_to_advance = int(cmd_dict.get("minutes", 0))
+            try:
+                time_to_advance = int(cmd_dict.get("minutes", 0))
+            except (TypeError, ValueError):
+                return fail("Rest duration must be a valid integer.")
             if time_to_advance <= 0:
                 return fail("Rest duration must be positive.")
             msg = f"You rested for {cmd_dict.get('hours', 8)} hours."
 
         elif action == "wait":
-            time_to_advance = int(cmd_dict.get("minutes", 0))
+            try:
+                time_to_advance = int(cmd_dict.get("minutes", 0))
+            except (TypeError, ValueError):
+                return fail("Wait duration must be a valid integer.")
             if time_to_advance <= 0:
                 return fail("Wait duration must be positive.")
             msg = f"You waited for {cmd_dict.get('days', 1)} days."
@@ -368,36 +561,104 @@ class Game:
 
         elif action == "save":
             slot = cmd_dict.get("slot", "default")
-            self.save_manager.save_game(self.world, slot=slot)
+            prev_tutorial = copy.deepcopy(self.world.flags.get("tutorial"))
+            self._sync_tutorial_world().advance_tutorial_for_action(
+                "save",
+                slot,
+                {"success": True, "action": "save"},
+            )
+            try:
+                self.save_manager.save_game(self.world, slot=slot)
+            except Exception:
+                if prev_tutorial is None:
+                    self.world.flags.pop("tutorial", None)
+                else:
+                    self.world.flags["tutorial"] = prev_tutorial
+                raise
             msg = f"Saved game to slot '{slot}'."
 
         elif action == "load":
             slot = cmd_dict.get("slot", "default")
-            self.world = self.save_manager.load_game(slot=slot)
+            try:
+                loaded_world = self.save_manager.load_game(slot=slot)
+            except (SaveNotFoundError, SaveError) as exc:
+                return fail(str(exc))
+            self._rebind_world(loaded_world)
             msg = f"Loaded game from slot '{slot}'."
 
         elif action == "chronicle":
             chron = self.save_manager.generate_chronicle(self.world)
             msg = f"Generated chronicle with {len(chron)} entries."
 
+        elif action == "prologue":
+            res = self.advance_prologue(choice_id=cmd_dict.get("choice_id"))
+            if not res.get("success"):
+                return fail(res.get("message", "Could not advance prologue."))
+            msg = str(res.get("message", "Prologue updated."))
+
+        elif action == "skip_prologue":
+            res = self.skip_prologue()
+            msg = str(res.get("message", "Prologue skipped."))
+
+        elif action == "replay_prologue":
+            res = self.replay_prologue()
+            msg = str(res.get("message", "Prologue restarted."))
+
+        elif action == "tutorial_status":
+            t_state = self.get_tutorial_state()
+            done, total = t_state["progress"]
+            step_info = t_state.get("step_info")
+            if t_state["skipped"]:
+                msg = f"Tutorial skipped ({done}/{total} steps). Type 'tutorial reset' to resume."
+            elif t_state["completed"] or not step_info:
+                msg = f"Tutorial complete ({done}/{total} steps)."
+            else:
+                msg = f"Tutorial ({done}/{total}) — {step_info['title']}: {step_info['hint']}"
+
+        elif action == "tutorial_skip":
+            res = self.skip_tutorial()
+            msg = str(res.get("message", "Tutorial skipped."))
+
+        elif action == "tutorial_reset":
+            res = self.reset_tutorial()
+            msg = str(res.get("message", "Tutorial reset."))
+
         elif action == "help":
-            msg = "Available commands: talk, inspect, attack, aim, move, check health, open <view>, rest, wait, save, load, chronicle."
+            msg = "Available commands: talk, inspect, attack, aim, move, choose, check health, open <view>, rest, wait, save, load, chronicle, prologue, tutorial."
 
         else:
             return fail(
-                f"Unknown command '{action}'. Type 'help' for valid commands (talk, inspect, attack, move, check health, open <view>, rest, wait, save, load, chronicle)."
+                f"Unknown command '{action}'. Type 'help' for valid commands (talk, inspect, attack, move, choose, check health, open <view>, rest, wait, save, load, chronicle, prologue, tutorial)."
             )
 
         if time_to_advance > 0:
             events = self.simulation.advance_time(time_to_advance, world=self.world)
 
-        return {
+        result_dict: dict[str, Any] = {
             "success": True,
             "action": action,
             "message": msg,
             "events": events,
             "data": dict(cmd_dict),
         }
+
+        if action not in (
+            "save",
+            "prologue",
+            "skip_prologue",
+            "replay_prologue",
+            "tutorial_status",
+            "tutorial_skip",
+            "tutorial_reset",
+            "help",
+        ):
+            self._sync_tutorial_world().advance_tutorial_for_action(
+                action,
+                str(cmd_dict.get("target", "")),
+                result_dict,
+            )
+
+        return result_dict
 
     def resolve_scenario_approach(self, approach_name: str, expose_target: str = "city_guard", **kwargs: Any) -> dict[str, Any]:
         """Resolve one of the 4 approaches in 'Blood in Lowtown' scenario (GDD Section 18)."""
@@ -409,6 +670,10 @@ class Game:
             }
 
         def _emit_quest_completed() -> None:
+            if quest:
+                for obj in quest.objectives:
+                    if obj.get("id") == "choose_faction_approach":
+                        obj["completed"] = True
             self.world.event_bus.emit(
                 GameEvent(
                     id=f"ev_quest_{uuid.uuid4().hex[:6]}",
@@ -421,6 +686,11 @@ class Game:
                     importance=0.85,
                 ),
                 priority=EventPriority.CRITICAL,
+            )
+            self._sync_tutorial_world().advance_tutorial_for_action(
+                "choose_approach",
+                approach_name,
+                {"success": True},
             )
 
         if approach_name == "support_city_guard":
@@ -441,7 +711,8 @@ class Game:
             self.world.reputation["faction"]["lowtown_syndicate"] = 35.0
             self.world.reputation["faction"]["city_guard"] = -25.0
             self.world.reputation["criminal_underworld"] = self.world.reputation.get("criminal_underworld", 0.0) + 25.0
-            self.world.nemesis_profiles["npc_voss"].player_hostility = 65.0
+            if "npc_voss" in self.world.nemesis_profiles:
+                self.world.nemesis_profiles["npc_voss"].player_hostility = 65.0
             self.world.flags["exposed_illegal_trade"] = True
             self.world.flags["criminal_contacts_unlocked"] = True
             self.world.flags["blood_in_lowtown_completed"] = True
@@ -486,7 +757,8 @@ class Game:
 
         elif approach_name == "exploit_situation":
             self.world.player.needs["wealth"] = self.world.player.needs.get("wealth", 0.0) + 150.0
-            self.world.districts["lowtown"].unrest += 25.0
+            if "lowtown" in self.world.districts:
+                self.world.districts["lowtown"].unrest += 25.0
             self.faction_system.adjust_relation("city_guard", "lowtown_syndicate", -40.0, world=self.world)
             self.faction_system.adjust_relation("lowtown_syndicate", "city_guard", -40.0, world=self.world)
             self.world.flags["blood_in_lowtown_completed"] = True

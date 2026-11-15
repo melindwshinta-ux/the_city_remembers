@@ -97,22 +97,6 @@ def populate_world(world: Any) -> Any:
     ]
 
     for did, name, charac, conflict, pop, w, sec, unr, emp, crime, inf in districts_data:
-        locs: list[Location] = []
-        if did == "lowtown":
-            loc_names = [
-                ("lowtown_tavern", "The Drunken Gull Tavern"),
-                ("lowtown_market", "Cobblestone Market"),
-                ("lowtown_docks", "Murky Docks"),
-                ("lowtown_alleys", "Shadow Alleyways"),
-                ("lowtown_safehouse", "Derelict Safehouse"),
-                ("lowtown_watchpost", "Guard Watchpost"),
-                ("lowtown_warehouse", "Abandoned Fish Warehouse"),
-                ("lowtown_tenements", "Crowded Tenements"),
-                ("lowtown_street", "Lowtown Main Thoroughfare"),
-            ]
-            for lid, lname in loc_names:
-                locs.append(Location(id=lid, name=lname, district_id="lowtown", description=lname))
-
         world.districts[did] = District(
             id=did,
             name=name,
@@ -125,8 +109,95 @@ def populate_world(world: Any) -> Any:
             employment=emp,
             crime=crime,
             faction_influence=inf,
-            locations=locs,
+            locations=[],
         )
+
+        if did == "lowtown":
+            lowtown_locations = [
+                Location(
+                    id="lowtown_tavern",
+                    name="The Drunken Gull Tavern",
+                    district_id="lowtown",
+                    description="A smoke-stained tavern smelling of cheap ale and damp wool, where off-duty guards and Syndicate informants drink in separate booths.",
+                    connected_locations=["lowtown_street", "lowtown_docks"],
+                    terrain_features=["hearth", "booths", "back_exit"],
+                    npcs_present=["comp_marcus", "comp_elira", "comp_sera", "comp_tomas"],
+                ),
+                Location(
+                    id="lowtown_market",
+                    name="Cobblestone Market",
+                    district_id="lowtown",
+                    description="A bustling open-air square of canvas stalls and slick cobblestones, now cordoned with Guard chalk around a slain merchant's cart.",
+                    connected_locations=["lowtown_street", "lowtown_docks", "lowtown_alleys"],
+                    terrain_features=["market_stalls", "cover", "chalk_perimeter"],
+                    npcs_present=["npc_trader_brant"],
+                ),
+                Location(
+                    id="lowtown_docks",
+                    name="Murky Docks",
+                    district_id="lowtown",
+                    description="Creaking timber piers shrouded in river fog, stacked with tarred cargo crates and watched by wary dockworkers.",
+                    connected_locations=["lowtown_market", "lowtown_tavern", "lowtown_warehouse"],
+                    terrain_features=["wooden_piers", "fog", "cargo_crates"],
+                    npcs_present=[],
+                ),
+                Location(
+                    id="lowtown_alleys",
+                    name="Shadow Alleyways",
+                    district_id="lowtown",
+                    description="A maze of narrow brick passages and dripping eaves linking the market to Syndicate territory.",
+                    connected_locations=["lowtown_street", "lowtown_market", "lowtown_safehouse", "lowtown_warehouse"],
+                    terrain_features=["narrow_passage", "rooftop_access", "storm_drains"],
+                    npcs_present=["npc_gang_karn", "npc_thief_ren"],
+                ),
+                Location(
+                    id="lowtown_safehouse",
+                    name="Derelict Safehouse",
+                    district_id="lowtown",
+                    description="A boarded-up chandler's cellar with a bolted iron grate and a dry cot tucked out of sight of street patrols.",
+                    connected_locations=["lowtown_alleys", "lowtown_tenements"],
+                    terrain_features=["cellar_grate", "cover", "resting_cot"],
+                    npcs_present=[],
+                ),
+                Location(
+                    id="lowtown_watchpost",
+                    name="Guard Watchpost",
+                    district_id="lowtown",
+                    description="A squat stone outpost reinforced with iron shutters, serving as Captain Voss's forward garrison in Lowtown.",
+                    connected_locations=["lowtown_street", "lowtown_tenements"],
+                    terrain_features=["stone_walls", "iron_gate", "notice_board"],
+                    npcs_present=["npc_voss", "npc_merek"],
+                ),
+                Location(
+                    id="lowtown_warehouse",
+                    name="Abandoned Fish Warehouse",
+                    district_id="lowtown",
+                    description="A salt-crusted timber warehouse near the riverfront where Boss Malakor conducts Syndicate business behind locked doors.",
+                    connected_locations=["lowtown_docks", "lowtown_alleys"],
+                    terrain_features=["crates", "catwalks", "locked_office"],
+                    npcs_present=["npc_boss_malakor"],
+                ),
+                Location(
+                    id="lowtown_tenements",
+                    name="Crowded Tenements",
+                    district_id="lowtown",
+                    description="Leaning multi-story wooden flats strung with laundry lines, packed with laborers and watchful neighbors.",
+                    connected_locations=["lowtown_street", "lowtown_watchpost", "lowtown_safehouse"],
+                    terrain_features=["stairwells", "balconies", "crowds"],
+                    npcs_present=[],
+                ),
+                Location(
+                    id="lowtown_street",
+                    name="Lowtown Main Thoroughfare",
+                    district_id="lowtown",
+                    description="The mud-churned main artery of Lowtown, lit by sputtering oil lanterns and flanked by taverns, stalls, and Watch patrols.",
+                    connected_locations=["lowtown_market", "lowtown_tavern", "lowtown_watchpost", "lowtown_tenements", "lowtown_alleys"],
+                    terrain_features=["cobblestones", "lantern_posts", "crowds"],
+                    npcs_present=[],
+                ),
+            ]
+            for loc in lowtown_locations:
+                world.add_location(loc)
 
     # 2. Seven Factions
     factions_data = [

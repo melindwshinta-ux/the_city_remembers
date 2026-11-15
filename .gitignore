@@ -5,5 +5,7 @@ __pycache__/
 .pytest_cache/
 saves/*.db
 saves/*.sqlite
+saves/
+.agents/
 *.db
 .DS_Store
