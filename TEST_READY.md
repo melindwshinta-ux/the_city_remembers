@@ -1,43 +1,35 @@
-# TEST_READY — THE CITY REMEMBERS (Prologue, Tutorial & QOL UI/UX)
+# TEST_READY — THE CITY REMEMBERS (Warsim-Style Choice Overhaul & Systemic Depth)
 
 ## Test Runner Command
 ```bash
-/home/antigravity/the_city_remembers/.venv/bin/pytest -v
+/home/antigravity/the_city_remembers/.venv/bin/pytest -q tests/e2e/test_e2e_warsim_overhaul.py
+/home/antigravity/the_city_remembers/.venv/bin/pytest -q
 ```
 
 ## Latest Full Suite Result
-- **Status**: PASS (exit code `0`)
-- **Total Tests**: `333 passed` (296 existing + 11 M1 unit/integration + 14 M2 UI/QOL + 12 E2E Tiers 1–4 onboarding/QOL tests)
-- **E2E Suite File**: `/home/antigravity/the_city_remembers/tests/e2e/test_e2e_onboarding_qol.py`
+- **Total Tests**: `388` (`346` baseline + `32` M1–M4 unit/UI tests + `10` new E2E Tiers 1–4 tests)
+- **Passing**: `387 passed` (`378/378` existing + `9/10` new E2E)
+- **Escalated Implementation Bug (`1 failed`)**:
+  - `test_t3_title_to_warsim_economy_digest_and_sqlite_roundtrip` failed at `assert g3.world.commodities.get("grain_rations") == 2` (`{}`).
+  - Root cause: `SaveManager.load_game()` (`persistence/save_manager.py`) reconstructs `World` from relational tables and does not restore `commodities`, `properties`, `loans`, or `caravans` (even though `World.to_dict()` / `save_slots.payload_json` serializes them). Escalated to orchestrator for M5 fix.
+- **E2E Suite File**: `/home/antigravity/the_city_remembers/tests/e2e/test_e2e_warsim_overhaul.py`
 
 ## Coverage Summary (Tiers 1–4)
 
 ### Tier 1 — Feature Coverage
-- `test_t1_prologue_beats_and_all_three_stance_choices`: Verifies all 3 prologue beats (`arrival_in_veyr`, `blood_in_lowtown_market`, `choose_opening_stance`) and deterministic starting effects (wealth, faction reputation, companion friendship, memories, `Act I` transition) for `watch_investigator`, `street_broker`, and `unbound_drifter`.
-- `test_t1_tutorial_nine_steps_sequential_completion`: Verifies all 9 Mission 1–2 tutorial steps (`m1_move_market` through `m2_save_game`) advance sequentially to `(9, 9)` completion.
-- `test_t1_prologue_screen_interactive_beats_preview_and_skip`: Verifies Textual `PrologueScreen` beat progression, stance preview, completion, and `Esc` skip.
-- `test_t1_tutorial_hud_help_quit_history_and_view_shortcuts`: Verifies Tutorial HUD (`Hide`/`Show`, `Next Hint`, `Help`), `HelpModal` (`?`, `F1`, `Esc`, `q`, Close button), `QuitConfirmModal` (`Ctrl+Q`, cancel, confirm), `CommandInput` Up/Down history & draft preservation, and `1`–`8` (blurred) / `F2`–`F9` (anytime) view shortcuts.
-- `test_t1_four_ui_bugfixes_verified_opaque_box`: Verifies `combat_screen` non-mutation of `active_encounter`, `main_screen` dynamic district rendering, `character_screen` dynamic attributes/personality rendering, and `journal_screen` player-only inventory rendering.
+- `test_t1_main_menu_settings_about_load_delete_and_new_game_wizard`: Verifies `TitleScreen` (`[1]` Continue disabled/enabled, `[2]` New Game across 4 Difficulties, 4 Backgrounds, 4 Keepsakes, Prologue vs Skip Prologue, `[3]` Load Game + `[9]` Delete Slot, `[4]` Settings persisted to `settings.json`, `[5]` About).
+- `test_t1_settings_gated_debug_cheat_mode_all_nine_actions`: Verifies `DebugMode` is blocked with zero state mutation and `[0] Debug & Cheat Menu` is hidden when `enable_debug_cheat=False`, and all 9 cheat actions succeed when enabled.
+- `test_t1_zero_typing_warsim_navigation_120x40_and_80x24`: Verifies `warsim_mode=True` hides `#command-input`, shows `#status-banner` & `#action-deck`, and navigates all Root Hub screens + `[9]` pagination using only `1`–`9`/`0` keys and `#action-*` clicks at `(120, 40)` and `(80, 24)`.
+- `test_t1_interactive_branching_dialogue_all_options`: Verifies `DialogueEngine` NPC header/6-axis bars, dynamic greeting, and all `[1]`–`[8]`/`[0]` choices (Rumors, Quest Business, Persuade, Intimidate, Bribe, Companion Interjection, Recruit/Favor, Provoke -> Combat, Leave).
+- `test_t1_simplified_combat_clash_all_actions_and_viewport`: Verifies Combat Clash Viewport rendering and all `[1]`–`[7]`/`[0]` clash actions (Balanced, Heavy `+35%`, Aimed Limb, Defend/Rally, Field Triage, Tactical Trick, Demand Surrender `morale <= 30`, Retreat).
+- `test_t1_systemic_depth_politics_relationships_economy_digest`: Verifies all Political operations, 3 Civic Edicts, Procedural Petitioners, all 5 Relationship Social Actions, 6 Commodities, 5 Upgradeable Properties, Loans, Caravans, and Daily City Digest.
 
 ### Tier 2 — Boundary & Corner Cases
-- `test_t2_invalid_prologue_choices_and_replay_idempotency`: Rejects invalid/missing prologue choices without completing prologue; verifies `replay_prologue()` does not double-apply starting bonuses.
-- `test_t2_skip_prologue_and_tutorial_zero_time_and_out_of_order`: Verifies skipping prologue/tutorial advances 0 simulation minutes, `save` (`require_current=True`) does not auto-complete earlier steps, and out-of-order `inspect lowtown_alleys` auto-advances superseded steps.
-- `test_t2_missing_and_corrupted_save_slots`: Verifies `load` on missing slot and corrupted `save_slots.payload_json` fails gracefully (`success=False`) without crashing `Game`.
-- `test_t2_rich_markup_escaping_and_compact_80x24_and_non_blocking_create_app`: Verifies `[red]`/`[/]`/`[bold]` Rich markup characters do not raise `MarkupError`, `(80, 24)` layout fits all widgets cleanly, and `create_app(game=...)` defaults `show_prologue=False` (non-blocking).
+- `test_t2_ironman_single_slot_difficulty_modifiers_and_corrupt_settings`: Verifies Ironman single-slot lock, `story` vs `gritty` modifier scaling, corrupted `settings.json` fallback, and social leverage/threshold guards.
+- `test_t2_rich_markup_escaping_in_warsim_menus`: Verifies Rich markup characters in dynamic epithets/names do not raise `MarkupError` in `MenuEngine`.
 
 ### Tier 3 — Cross-Feature Combinations
-- `test_t3_prologue_missions_sqlite_roundtrip_and_post_load_ui_refresh`: End-to-end Prologue -> Mission 1 -> Mission 2 -> SQLite save/load into fresh `Game` -> continued Textual UI gameplay & HUD refresh to `(9/9)`.
-- `test_t3_pilot_command_submission_hud_and_view_switching`: Async Textual `pilot` command submission updating Tutorial HUD progress, switching views on `open <view>`, and updating `#view-content`.
+- `test_t3_title_to_warsim_economy_digest_and_sqlite_roundtrip`: End-to-end `TitleScreen` -> New Game Wizard -> Economy (`commodities`, `properties`) + Daily City Digest -> SQLite save/reload roundtrip (currently exposes `SaveManager.load_game` omission of `commodities`/`properties`/`loans`/`caravans`).
 
 ### Tier 4 — Real-World Application Scenarios
-- `test_t4_complete_onboarding_walkthrough_prologue_to_m2_save_and_quit`: Complete player onboarding walkthrough from `PrologueScreen` launch through Mission 1 ("Blood in Lowtown") resolution, Mission 2 ("Missing Apprentice") investigation, health check, rest, SQLite save, `QuitConfirmModal` cancel/confirm, and fresh-session reload verification.
-
-## Feature Checklist
-- [x] F-PRO-1: Interactive Prologue Narrative & 3 Stance Choices
-- [x] F-PRO-2: Non-Blocking, Skippable & Replayable Prologue (`create_app(game=...)` & `show_prologue`)
-- [x] F-TUT-1: Hands-On 9-Step Tutorial State Machine (Missions 1–2)
-- [x] F-TUT-2: Off-Rails Resilience, Skip, Reset & SQLite Persistence
-- [x] F-UI-1: `PrologueScreen` & Collapsible Tutorial/Objective HUD
-- [x] F-UI-2: `HelpModal`, `QuitConfirmModal`, `CommandInput` History & View Shortcuts
-- [x] F-UI-3: Rich Markup Escaping, `(80, 24)` Responsive Layout & 4 UI Bugfixes
-- [x] F-E2E-1: Opaque-Box E2E Test Suite (Tiers 1–4)
+- `test_t4_complete_warsim_session_zero_typing_walkthrough`: Full zero-typing Textual `pilot` walkthrough across Travel, Market Trade, Dialogue, Combat Clash, and Pass Time / Daily City Digest.

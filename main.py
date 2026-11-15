@@ -23,6 +23,7 @@ from ui.main_screen import render_main_view
 from ui.map_screen import render_map_view
 from ui.modals import CommandInput, HelpModal, QuitConfirmModal
 from ui.prologue_screen import PrologueScreen
+from ui.title_screen import TitleScreen
 
 VIEWS: tuple[tuple[str, str], ...] = (
     ("world", "1:World"),
@@ -44,6 +45,12 @@ class CityRemembersApp(App[None]):
     SUB_TITLE = "Systemic Narrative RPG"
 
     CSS = """
+    #status-banner {
+        height: 1;
+        padding: 0 1;
+        background: $primary-darken-2;
+        color: $text;
+    }
     #nav-bar {
         layout: grid;
         grid-size: 4 2;
@@ -106,6 +113,24 @@ class CityRemembersApp(App[None]):
         padding: 0 1;
         margin-top: 0;
     }
+    #action-deck {
+        layout: grid;
+        grid-size: 2 5;
+        grid-gutter: 0 1;
+        height: auto;
+        padding: 0 1;
+        margin: 0 1;
+        background: $panel;
+    }
+    #action-deck Button {
+        width: 1fr;
+        min-width: 0;
+        height: 1;
+        border: none;
+        padding: 0 1;
+        margin: 0;
+        content-align: left middle;
+    }
     #quick-actions {
         height: 1;
         min-height: 1;
@@ -126,17 +151,32 @@ class CityRemembersApp(App[None]):
         dock: bottom;
         margin: 0 1;
     }
+    CityRemembersApp.compact #nav-bar Button {
+        padding: 0;
+    }
+    CityRemembersApp.warsim.compact #tutorial-hud {
+        max-height: 4;
+    }
+    CityRemembersApp.compact #command-log {
+        height: 3;
+    }
+    CityRemembersApp.compact #action-deck {
+        padding: 0;
+        margin: 0;
+    }
     """
 
     BINDINGS = [
-        Binding("1", "switch_view('world')", "World"),
-        Binding("2", "switch_view('character')", "Character"),
-        Binding("3", "switch_view('health')", "Health"),
-        Binding("4", "switch_view('party')", "Party"),
-        Binding("5", "switch_view('combat')", "Combat"),
-        Binding("6", "switch_view('factions')", "Factions"),
-        Binding("7", "switch_view('journal')", "Journal"),
-        Binding("8", "switch_view('inventory')", "Inventory"),
+        Binding("1", "number_key('1')", "1", show=False),
+        Binding("2", "number_key('2')", "2", show=False),
+        Binding("3", "number_key('3')", "3", show=False),
+        Binding("4", "number_key('4')", "4", show=False),
+        Binding("5", "number_key('5')", "5", show=False),
+        Binding("6", "number_key('6')", "6", show=False),
+        Binding("7", "number_key('7')", "7", show=False),
+        Binding("8", "number_key('8')", "8", show=False),
+        Binding("9", "number_key('9')", "9", show=False),
+        Binding("0", "number_key('0')", "0", show=False),
         Binding("f2", "switch_view('world')", "World", show=False),
         Binding("f3", "switch_view('character')", "Character", show=False),
         Binding("f4", "switch_view('health')", "Health", show=False),
@@ -163,17 +203,26 @@ class CityRemembersApp(App[None]):
         self,
         game: Game | None = None,
         show_prologue: bool | None = None,
+        show_title: bool = False,
+        warsim_mode: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self.game: Game = game if game is not None else Game()
-        self.show_prologue: bool = (game is None) if show_prologue is None else bool(show_prologue)
+        self.show_title: bool = bool(show_title)
+        self.warsim_mode: bool = bool(warsim_mode)
+        self.show_prologue: bool = (
+            (game is None and not self.show_title) if show_prologue is None else bool(show_prologue)
+        )
         self.current_view: str = "world"
         self.hud_collapsed: bool = False
         self._quick_cmd_map: dict[str, str] = {}
 
     def compose(self) -> ComposeResult:
         yield Header()
+        banner = Static("", id="status-banner", markup=True)
+        banner.display = self.warsim_mode
+        yield banner
         with Horizontal(id="nav-bar"):
             for view_id, label in VIEWS:
                 variant = "primary" if view_id == self.current_view else "default"
@@ -191,25 +240,91 @@ class CityRemembersApp(App[None]):
         with Vertical(id="main-pane"):
             yield Static(escape(self.render_active_view()), id="view-content", markup=True)
             yield RichLog(id="command-log", highlight=True, markup=True, wrap=True)
-        with HorizontalScroll(id="quick-actions"):
+        with Vertical(id="action-deck") as deck:
+            deck.display = self.warsim_mode
+            for key in ("1", "2", "3", "4", "5", "6", "7", "8", "9", "0"):
+                btn = Button("", id=f"action-{key}", variant="default")
+                btn.display = False
+                yield btn
+        with HorizontalScroll(id="quick-actions") as qa:
+            qa.display = not self.warsim_mode
             for idx in range(12):
                 btn = Button("", id=f"qa-{idx}", variant="default")
                 btn.display = False
                 yield btn
-        yield CommandInput(
+        cmd_input = CommandInput(
             placeholder="Click Quick Actions above or type command (e.g. 'talk sera', 'help')...",
             id="command-input",
         )
+        cmd_input.display = not self.warsim_mode
+        yield cmd_input
         yield Footer()
 
     def on_mount(self) -> None:
+        self._apply_responsive_class()
+        self.refresh_status_banner()
         self.refresh_view()
         self.refresh_tutorial_hud()
         self.refresh_quick_actions()
+        self.refresh_action_deck()
         log = self.query_one("#command-log", RichLog)
-        log.write("[bold green]Welcome to Veyr.[/] Click quick buttons below or type [cyan]'help'[/] / press [cyan]?[/] / [cyan]F1[/].")
-        if self.show_prologue and self.game.get_prologue_state().get("active", False):
+        if self.warsim_mode:
+            log.write("[bold green]Welcome to Veyr.[/] Press [cyan]1-9[/] or [cyan]0[/] (or click buttons) to play.")
+        else:
+            log.write("[bold green]Welcome to Veyr.[/] Click quick buttons below or type [cyan]'help'[/] / press [cyan]?[/] / [cyan]F1[/].")
+        if self.show_title:
+            self.push_screen(
+                TitleScreen(settings=self.game.settings, save_manager=self.game.save_manager),
+                callback=self._on_title_closed,
+            )
+        elif self.show_prologue and self.game.get_prologue_state().get("active", False):
             self.push_screen(PrologueScreen(self.game), callback=self._on_prologue_closed)
+
+    def on_resize(self) -> None:
+        self._apply_responsive_class()
+
+    def _apply_responsive_class(self) -> None:
+        if self.warsim_mode:
+            self.add_class("warsim")
+        else:
+            self.remove_class("warsim")
+        layout_mode = getattr(getattr(self.game, "settings", None), "layout_mode", "auto")
+        is_compact = layout_mode == "compact" or (
+            layout_mode == "auto" and (self.size.width <= 85 or self.size.height <= 26)
+        )
+        if is_compact:
+            self.add_class("compact")
+        else:
+            self.remove_class("compact")
+
+    def _on_title_closed(self, result: dict[str, Any] | None) -> None:
+        if result is None or result.get("action") == "quit":
+            self.exit()
+            return
+        act = result.get("action")
+        if act in ("continue", "load"):
+            slot = str(result.get("slot", ""))
+            res = self.game.execute_command({"action": "load", "actor": "player", "slot": slot})
+            self.game.menu_engine.reset()
+            log = self.query_one("#command-log", RichLog)
+            log.write(f"[green]{escape(str(res.get('message', f'Loaded {slot}.')))}[/]")
+        elif act == "new_game":
+            self.game = Game(
+                settings=result.get("settings", self.game.settings),
+                difficulty=result.get("difficulty"),
+                background=result.get("background"),
+                keepsake=result.get("keepsake"),
+                skip_prologue=bool(result.get("skip_prologue", False)),
+            )
+            if not result.get("skip_prologue", False) and self.game.get_prologue_state().get("active", False):
+                self.push_screen(PrologueScreen(self.game), callback=self._on_prologue_closed)
+
+        self._apply_responsive_class()
+        self.refresh_status_banner()
+        self.refresh_view()
+        self.refresh_tutorial_hud()
+        self.refresh_quick_actions()
+        self.refresh_action_deck()
 
     def _on_prologue_closed(self, result: dict[str, Any] | None) -> None:
         log = self.query_one("#command-log", RichLog)
@@ -217,12 +332,19 @@ class CityRemembersApp(App[None]):
             log.write(f"[green]{escape(str(result['message']))}[/]")
         elif result and result.get("skipped"):
             log.write("[yellow]Prologue skipped. Act I begins in Lowtown.[/]")
+        self.refresh_status_banner()
         self.refresh_view()
         self.refresh_tutorial_hud()
         self.refresh_quick_actions()
+        self.refresh_action_deck()
 
     def render_active_view(self, view: str | None = None) -> str:
         target = (view or self.current_view).lower()
+        if self.warsim_mode and target == "world":
+            screen = self.game.menu_engine.get_screen()
+            if screen.get("mode") == "combat":
+                return render_combat_view(self.game)
+            return f"=== {screen['title']} ===\n{screen['subtitle']}\n\n{screen['body']}"
         if target == "world":
             return f"{render_main_view(self.game)}\n\n{render_map_view(self.game)}"
         if target == "character":
@@ -241,6 +363,54 @@ class CityRemembersApp(App[None]):
             return render_inventory_view(self.game)
         return render_main_view(self.game)
 
+    def refresh_status_banner(self) -> None:
+        banner = self.query_one("#status-banner", Static)
+        banner.display = self.warsim_mode
+        if not self.warsim_mode:
+            return
+        world = self.game.world
+        player = getattr(world, "player", None)
+        p_loc = (getattr(player, "location_id", None) or "lowtown") if player else "lowtown"
+        loc = world.get_location(p_loc) if hasattr(world, "get_location") else world.locations.get(p_loc)
+        loc_name = getattr(loc, "name", p_loc) if loc else p_loc
+        gold = float(getattr(player, "needs", {}).get("wealth", 0.0)) if player else 0.0
+        consc = float(getattr(player, "consciousness", 100.0)) if player else 100.0
+        diff = str(getattr(getattr(self.game, "settings", None), "difficulty", "balanced")).title()
+        epithet = str(getattr(world, "flags", {}).get("epithet", "Unproven Wanderer"))
+        clock = world.clock
+        text = (
+            f"[bold gold1]{escape(clock.act)}[/] Y{clock.year}D{clock.day} {clock.hour:02d}:{clock.minute:02d} | "
+            f"[cyan]{escape(loc_name)}[/] | [yellow]{gold:.0f}g[/] | "
+            f"Consc {consc:.0f}% | {escape(diff)} | [italic]{escape(epithet)}[/]"
+        )
+        banner.update(text)
+
+    def refresh_action_deck(self) -> None:
+        deck = self.query_one("#action-deck", Vertical)
+        deck.display = self.warsim_mode
+        if not self.warsim_mode:
+            return
+        screen = self.game.menu_engine.get_screen()
+        opts = {str(o["key"]): o for o in screen.get("options", [])}
+        debug_on = bool(getattr(getattr(self.game, "settings", None), "enable_debug_cheat", False))
+        for key in ("1", "2", "3", "4", "5", "6", "7", "8", "9", "0"):
+            btn = self.query_one(f"#action-{key}", Button)
+            opt = opts.get(key)
+            if opt is None:
+                btn.display = False
+            else:
+                tags = opt.get("tags") or []
+                tag_str = f" ({', '.join(tags[:2])})" if tags else ""
+                btn.label = f"[{key}] {opt['label']}{tag_str}"
+                btn.disabled = not bool(opt.get("enabled", True))
+                if key == "1" and opt.get("enabled", True):
+                    btn.variant = "primary"
+                elif key == "0" and screen.get("mode") == "hub" and debug_on:
+                    btn.variant = "warning"
+                else:
+                    btn.variant = "default"
+                btn.display = True
+
     def refresh_view(self) -> None:
         content = self.query_one("#view-content", Static)
         content.update(escape(self.render_active_view()))
@@ -255,6 +425,11 @@ class CityRemembersApp(App[None]):
         detail_widget = self.query_one("#tutorial-hud-detail", Static)
         hud_box = self.query_one("#tutorial-hud", Vertical)
         toggle_btn = self.query_one("#btn-hud-toggle", Button)
+
+        if self.warsim_mode and not getattr(getattr(self.game, "settings", None), "guided_tutorial_hud", True):
+            hud_box.display = False
+            return
+        hud_box.display = True
 
         if self.hud_collapsed:
             hud_box.add_class("collapsed")
@@ -387,20 +562,43 @@ class CityRemembersApp(App[None]):
             else:
                 btn.display = False
 
+    def action_number_key(self, key: str) -> None:
+        if isinstance(self.screen, (TitleScreen, PrologueScreen, ModalScreen)):
+            return
+        if self.warsim_mode:
+            self._handle_warsim_choice(key)
+        elif key in {"1", "2", "3", "4", "5", "6", "7", "8"}:
+            view_id = VIEWS[int(key) - 1][0]
+            self.action_switch_view(view_id)
+
+    def _handle_warsim_choice(self, key: str) -> None:
+        res = self.game.menu_engine.select(key)
+        self.current_view = "world"
+        msg = res.get("message")
+        if msg:
+            log = self.query_one("#command-log", RichLog)
+            color = "green" if res.get("success", True) else "bold red"
+            log.write(f"[{color}]{escape(str(msg))}[/]")
+        self._apply_responsive_class()
+        self.refresh_status_banner()
+        self.refresh_view()
+        self.refresh_tutorial_hud()
+        self.refresh_action_deck()
+
     def action_switch_view(self, view: str) -> None:
-        if isinstance(self.screen, (PrologueScreen, ModalScreen)):
+        if isinstance(self.screen, (TitleScreen, PrologueScreen, ModalScreen)):
             return
         if view in VIEW_KEYS:
             self.current_view = view
             self.refresh_view()
 
     def action_show_help(self) -> None:
-        if isinstance(self.screen, (PrologueScreen, ModalScreen)):
+        if isinstance(self.screen, (TitleScreen, PrologueScreen, ModalScreen)):
             return
         self.push_screen(HelpModal())
 
     def action_request_quit(self) -> None:
-        if isinstance(self.screen, (PrologueScreen, ModalScreen)):
+        if isinstance(self.screen, (TitleScreen, PrologueScreen, ModalScreen)):
             return
         self.push_screen(QuitConfirmModal(), callback=self._on_quit_confirmed)
 
@@ -410,6 +608,11 @@ class CityRemembersApp(App[None]):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         btn_id = event.button.id or ""
+        if btn_id.startswith("action-"):
+            key = btn_id[len("action-") :]
+            if self.warsim_mode:
+                self._handle_warsim_choice(key)
+            return
         if btn_id.startswith("qa-"):
             cmd = self._quick_cmd_map.get(btn_id)
             if cmd:
@@ -440,6 +643,7 @@ class CityRemembersApp(App[None]):
             )
             self.refresh_tutorial_hud()
             self.refresh_quick_actions()
+            self.refresh_action_deck()
             return
         if btn_id == "btn-hud-prologue":
             self.game.replay_prologue()
@@ -504,9 +708,16 @@ class CityRemembersApp(App[None]):
 def create_app(
     game: Game | None = None,
     show_prologue: bool | None = None,
+    show_title: bool = False,
+    warsim_mode: bool = False,
 ) -> CityRemembersApp:
     """Create and return a configured CityRemembersApp instance."""
-    return CityRemembersApp(game=game, show_prologue=show_prologue)
+    return CityRemembersApp(
+        game=game,
+        show_prologue=show_prologue,
+        show_title=show_title,
+        warsim_mode=warsim_mode,
+    )
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -536,7 +747,7 @@ def main(argv: list[str] | None = None) -> None:
         print(render_main_view(game))
         print("\nType a command (e.g. 'talk sera', 'inspect captain voss', 'rest 8h') or 'exit'.")
     else:
-        app = create_app()
+        app = create_app(show_title=True, warsim_mode=True)
         app.run()
 
 

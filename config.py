@@ -9,6 +9,7 @@ ROOT_DIR: Path = Path(__file__).resolve().parent
 CONTENT_DIR: Path = ROOT_DIR / "content"
 SAVES_DIR: Path = ROOT_DIR / "saves"
 DEFAULT_DB_PATH: Path = SAVES_DIR / "veyr_save.db"
+SETTINGS_PATH: Path = SAVES_DIR / "settings.json"
 
 # --- Default Seed (GDD Section 14, Line 656) ---
 DEFAULT_WORLD_SEED: int = 482193

@@ -103,6 +103,8 @@ class SaveManager:
     def save_game(self, world: World, slot: str = "default") -> None:
         """Persist current `World` state across all 15 SQLite tables and `save_slots`."""
         self._validate_world_before_save(world)
+        if bool(world.flags.get("ironman")):
+            slot = "ironman"
         self._create_file_backup()
         now_iso = datetime.now(timezone.utc).isoformat()
 
@@ -166,6 +168,10 @@ class SaveManager:
             "user_flags": dict(world.flags),
             "player_id": world.player_id,
             "locations": {lid: loc.to_dict() for lid, loc in sorted(world.locations.items())},
+            "properties": {pid: dict(pdata) for pid, pdata in sorted(world.properties.items())},
+            "commodities": {str(cid): int(qty) for cid, qty in sorted(world.commodities.items())},
+            "loans": [dict(loan) for loan in world.loans],
+            "caravans": [dict(caravan) for caravan in world.caravans],
         }
         conn.execute(
             """
@@ -760,6 +766,16 @@ class SaveManager:
             world.player_id = str(flags_raw.get("player_id", "player"))
             for lid, loc_dict in flags_raw.get("locations", {}).items():
                 world.locations[str(lid)] = Location.from_dict(loc_dict)
+            world.properties = {
+                str(pid): dict(pdata)
+                for pid, pdata in (flags_raw.get("properties") or {}).items()
+            }
+            world.commodities = {
+                str(cid): int(qty)
+                for cid, qty in (flags_raw.get("commodities") or {}).items()
+            }
+            world.loans = [dict(loan) for loan in (flags_raw.get("loans") or [])]
+            world.caravans = [dict(caravan) for caravan in (flags_raw.get("caravans") or [])]
         else:
             world.flags = dict(flags_raw)
 
@@ -1569,3 +1585,127 @@ class SaveManager:
             lines.append("")
 
         return "\n".join(lines).strip()
+
+    # ------------------------------------------------------------------
+    # Save Slot Browser, Deletion, Most Recent & Autosave (GEMINI_PLAN §1.1)
+    # ------------------------------------------------------------------
+
+    def list_save_slots(self) -> list[dict[str, Any]]:
+        """Return metadata dicts for all saved slots ordered most-recent first."""
+        rows = self.db.fetchall(
+            """
+            SELECT slot, world_seed, save_slots."current_timestamp" AS world_ts,
+                   current_year, current_act, payload_json, created_at
+            FROM save_slots
+            ORDER BY created_at DESC, rowid DESC;
+            """
+        )
+        slots: list[dict[str, Any]] = []
+        for row in rows:
+            slot_name = str(row["slot"])
+            try:
+                current_ts = int(row["world_ts"] or 0)
+            except (TypeError, ValueError):
+                current_ts = 0
+            current_year = int(row["current_year"] or 1)
+            current_act = str(row["current_act"] or "Prologue")
+            created_at = str(row["created_at"] or "")
+
+            char_name = "Rowan"
+            epithet = ""
+            day = ((current_ts + DEFAULT_START_HOUR * MINUTES_PER_HOUR) % MINUTES_PER_YEAR) // MINUTES_PER_DAY + 1
+            location_id = ""
+            location_name = ""
+            gold = 0.0
+            difficulty = "balanced"
+            ironman = False
+
+            try:
+                payload = json.loads(str(row["payload_json"]))
+                if isinstance(payload, dict):
+                    player_id = str(payload.get("player_id", "player"))
+                    chars = payload.get("characters", {})
+                    player_data = chars.get(player_id, {}) if isinstance(chars, dict) else {}
+                    if isinstance(player_data, dict):
+                        char_name = str(player_data.get("name", char_name))
+                        location_id = str(player_data.get("location_id", ""))
+                        needs = player_data.get("needs", {})
+                        if isinstance(needs, dict):
+                            gold = float(needs.get("wealth", 0.0))
+                    locs = payload.get("locations", {})
+                    if isinstance(locs, dict) and location_id in locs and isinstance(locs[location_id], dict):
+                        location_name = str(locs[location_id].get("name", location_id))
+                    else:
+                        location_name = location_id
+                    flags = payload.get("flags", {})
+                    if isinstance(flags, dict):
+                        epithet = str(flags.get("epithet", ""))
+                        difficulty = str(flags.get("difficulty", "balanced"))
+                        ironman = bool(flags.get("ironman", False))
+                    clock_dict = payload.get("clock", {})
+                    if isinstance(clock_dict, dict):
+                        if "year" in clock_dict:
+                            current_year = int(clock_dict["year"])
+                        if "day_of_year" in clock_dict:
+                            day = int(clock_dict["day_of_year"])
+                        elif "day" in clock_dict:
+                            day = int(clock_dict["day"])
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+
+            slots.append(
+                {
+                    "slot": slot_name,
+                    "character_name": char_name,
+                    "epithet": epithet,
+                    "act": current_act,
+                    "year": current_year,
+                    "day": day,
+                    "location_id": location_id,
+                    "location_name": location_name or location_id,
+                    "gold": gold,
+                    "difficulty": difficulty,
+                    "ironman": ironman,
+                    "created_at": created_at,
+                    "timestamp": current_ts,
+                }
+            )
+        return slots
+
+    def delete_save_slot(self, slot: str) -> bool:
+        """Delete a save slot by name. Returns True if deleted, False if not found."""
+        existing = self.db.fetchone("SELECT slot FROM save_slots WHERE slot = ?;", (slot,))
+        if existing is None:
+            return False
+        with self.db.transaction() as conn:
+            conn.execute("DELETE FROM save_slots WHERE slot = ?;", (slot,))
+            ws_row = conn.execute("SELECT active_slot FROM world_state WHERE id = 1;").fetchone()
+            if ws_row is not None and str(ws_row["active_slot"]) == slot:
+                conn.execute("UPDATE world_state SET active_slot = '' WHERE id = 1;")
+        return True
+
+    def get_most_recent_slot(self) -> dict[str, Any] | None:
+        """Return metadata for the most recently saved slot, or None if no saves exist."""
+        slots = self.list_save_slots()
+        return slots[0] if slots else None
+
+    def autosave(
+        self,
+        world: World,
+        reason: str = "autosave",
+        autosave_mode: str | None = None,
+    ) -> str | None:
+        """Perform an autosave respecting `autosave_mode` and Ironman single-slot rules."""
+        mode = (
+            str(autosave_mode).strip().lower()
+            if autosave_mode is not None
+            else str(world.flags.get("autosave_mode", "daily_and_precombat")).strip().lower()
+        )
+        if mode == "off":
+            return None
+        if mode == "precombat" and str(reason).strip().lower() == "daily":
+            return None
+
+        target_slot = "ironman" if bool(world.flags.get("ironman")) else "autosave"
+        self.save_game(world, slot=target_slot)
+        return target_slot

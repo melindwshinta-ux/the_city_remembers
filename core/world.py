@@ -63,6 +63,10 @@ class World:
         }
         self.chronicle: list[dict[str, Any]] = []
         self.flags: dict[str, Any] = {}
+        self.properties: dict[str, dict[str, Any]] = {}
+        self.commodities: dict[str, int] = {}
+        self.loans: list[dict[str, Any]] = []
+        self.caravans: list[dict[str, Any]] = []
         self.schema_version: int = 1
 
     @property
@@ -262,6 +266,10 @@ class World:
             "reputation": dict(self.reputation),
             "chronicle": list(self.chronicle),
             "flags": dict(self.flags),
+            "properties": {pid: dict(pdata) for pid, pdata in sorted(self.properties.items())},
+            "commodities": {str(cid): int(qty) for cid, qty in sorted(self.commodities.items())},
+            "loans": [dict(loan) for loan in self.loans],
+            "caravans": [dict(caravan) for caravan in self.caravans],
             "event_history": [ev.to_dict() for ev in self.event_bus.event_history],
         }
 
@@ -283,6 +291,14 @@ class World:
         world.reputation = dict(data.get("reputation", world.reputation))
         world.chronicle = list(data.get("chronicle", []))
         world.flags = dict(data.get("flags", {}))
+        world.properties = {
+            str(pid): dict(pdata) for pid, pdata in (data.get("properties") or {}).items()
+        }
+        world.commodities = {
+            str(cid): int(qty) for cid, qty in (data.get("commodities") or {}).items()
+        }
+        world.loans = [dict(loan) for loan in (data.get("loans") or [])]
+        world.caravans = [dict(caravan) for caravan in (data.get("caravans") or [])]
 
         for did, d_data in data.get("districts", {}).items():
             world.districts[str(did)] = d_data if isinstance(d_data, District) else District.from_dict(d_data)

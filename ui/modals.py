@@ -95,7 +95,12 @@ class HelpModal(ModalScreen[None]):
         with Vertical(id="help-dialog"):
             yield Static("THE CITY REMEMBERS — Command & Shortcut Reference", id="help-title")
             yield Static(
-                "Commands:\n"
+                "Warsim Controls (Zero-Typing Mode):\n"
+                "  1-9 / 0 (or click Action) Choose numbered action / Back / Debug\n"
+                "  F2-F9 or Alt+1-8          Switch between the 8 information views\n"
+                "  ? or F1                   Open this Help dialog\n"
+                "  Ctrl+Q or q               Quit game (with confirmation)\n\n"
+                "Legacy CLI Commands (when Command Input is visible):\n"
                 "  move <location_id>        Travel to a connected location\n"
                 "  inspect <target>          Inspect a scene, NPC, or clue\n"
                 "  talk <npc>                Speak with a companion or NPC\n"
@@ -105,13 +110,7 @@ class HelpModal(ModalScreen[None]):
                 "  rest <hours>h / wait <t>  Rest or pass time\n"
                 "  save [slot] / load [slot] Save or load game state\n"
                 "  prologue / skip prologue  Replay or skip the arrival prologue\n"
-                "  tutorial / tutorial skip  Check, skip, or reset the tutorial\n\n"
-                "Keyboard Shortcuts:\n"
-                "  F2-F9 or 1-8 (when blurred) Switch between the 8 views\n"
-                "  Up / Down (in input)        Navigate command history\n"
-                "  Esc                         Blur input or close modal\n"
-                "  ? or F1                     Open this Help dialog\n"
-                "  Ctrl+Q or q (when blurred)  Quit game (with confirmation)",
+                "  tutorial / tutorial skip  Check, skip, or reset the tutorial",
                 id="help-body",
             )
             yield Button("Close", id="btn-help-close", variant="primary")

@@ -54,6 +54,125 @@ def list_random_events() -> list[dict[str, Any]]:
     return list(RANDOM_EVENTS_LIST)
 
 
+COMMODITIES: dict[str, dict[str, Any]] = {
+    "grain_rations": {
+        "id": "grain_rations",
+        "name": "Grain & Rations",
+        "base_price": 12.0,
+        "category": "food",
+        "contraband": False,
+        "description": "Staple grain sacks and salted travel rations.",
+    },
+    "iron_tools": {
+        "id": "iron_tools",
+        "name": "Iron & Tools",
+        "base_price": 24.0,
+        "category": "industry",
+        "contraband": False,
+        "description": "Forged ingots, hammers, and foundry fittings.",
+    },
+    "weapons_armor": {
+        "id": "weapons_armor",
+        "name": "Weapons & Armor",
+        "base_price": 55.0,
+        "category": "martial",
+        "contraband": False,
+        "description": "Tempered blades, mail links, and leather harness.",
+    },
+    "medical_supplies": {
+        "id": "medical_supplies",
+        "name": "Medical Supplies",
+        "base_price": 32.0,
+        "category": "medicine",
+        "contraband": False,
+        "description": "Linen bandages, antiseptic spirits, and surgical salves.",
+    },
+    "luxury_silk_wine": {
+        "id": "luxury_silk_wine",
+        "name": "Luxury Silk & Wine",
+        "base_price": 75.0,
+        "category": "luxury",
+        "contraband": False,
+        "description": "Imported silks and vintage estates coveted in the High Quarter.",
+    },
+    "smuggled_contraband": {
+        "id": "smuggled_contraband",
+        "name": "Smuggled Contraband",
+        "base_price": 60.0,
+        "category": "contraband",
+        "contraband": True,
+        "description": "Untaxed arcane relics, black-lotus vials, and forged writs.",
+    },
+}
+
+
+PROPERTIES_CATALOG: dict[str, dict[str, Any]] = {
+    "lowtown_safehouse": {
+        "id": "lowtown_safehouse",
+        "name": "Lowtown Safehouse",
+        "district_id": "lowtown",
+        "type": "safehouse",
+        "base_cost": 150.0,
+        "daily_income": 15.0,
+        "upgrade_base_cost": 100.0,
+        "income_per_level": 12.0,
+        "description": "A fortified cellar with a hidden bolt-hole and dry bunks.",
+    },
+    "cobblestone_stall": {
+        "id": "cobblestone_stall",
+        "name": "Cobblestone Stall",
+        "district_id": "lowtown",
+        "type": "business",
+        "base_cost": 200.0,
+        "daily_income": 25.0,
+        "upgrade_base_cost": 140.0,
+        "income_per_level": 18.0,
+        "description": "A busy corner trading stall in Lowtown's Cobblestone Market.",
+    },
+    "iron_ward_smithy": {
+        "id": "iron_ward_smithy",
+        "name": "Iron Ward Smithy",
+        "district_id": "iron_ward",
+        "type": "workshop",
+        "base_cost": 350.0,
+        "daily_income": 45.0,
+        "upgrade_base_cost": 220.0,
+        "income_per_level": 30.0,
+        "description": "A soot-blackened forge producing blades and foundry tools.",
+    },
+    "harbor_smugglers_berth": {
+        "id": "harbor_smugglers_berth",
+        "name": "Harbor Smuggler's Berth",
+        "district_id": "harbor",
+        "type": "smuggling",
+        "base_cost": 400.0,
+        "daily_income": 55.0,
+        "upgrade_base_cost": 260.0,
+        "income_per_level": 35.0,
+        "description": "A private timber slip under the Harbor piers for untaxed cargo.",
+    },
+    "back_alley_clinic": {
+        "id": "back_alley_clinic",
+        "name": "Back-Alley Clinic",
+        "district_id": "lowtown",
+        "type": "clinic",
+        "base_cost": 280.0,
+        "daily_income": 35.0,
+        "upgrade_base_cost": 180.0,
+        "income_per_level": 22.0,
+        "description": "A discreet chirurgeon's parlor treating wounds without Guard questions.",
+    },
+}
+
+
+def get_commodities_catalog() -> dict[str, dict[str, Any]]:
+    return {k: dict(v) for k, v in COMMODITIES.items()}
+
+
+def get_properties_catalog() -> dict[str, dict[str, Any]]:
+    return {k: dict(v) for k, v in PROPERTIES_CATALOG.items()}
+
+
 def populate_world(world: Any) -> Any:
     """Populate World instance with canonical Veyr districts, factions, NPCs, companions, and items."""
     # 1. Seven Districts

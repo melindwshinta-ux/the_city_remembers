@@ -9,12 +9,15 @@ from pathlib import Path
 from typing import Any
 
 from ai.faction_ai import FactionAI
-from config import FREQ_FACTION_DECISIONS
+from config import FREQ_ECONOMY, FREQ_FACTION_DECISIONS, SETTINGS_PATH
 from content import populate_world
 from content.prologue import get_inspect_clue
 from core.clock import WorldClock
+from core.debug_mode import DebugMode
 from core.event_bus import EventBus, EventPriority, GameEvent
+from core.menu_engine import MenuEngine
 from core.random_generator import SeededRNG
+from core.settings import GameSettings, VALID_DIFFICULTIES, apply_new_game_setup, load_settings
 from core.simulation import SimulationEngine
 from core.tutorial import TutorialManager
 from core.world import World
@@ -45,11 +48,35 @@ class Game:
         save_manager: SaveManager | None = None,
         db_path: str | Path | None = None,
         world: World | None = None,
+        settings: GameSettings | None = None,
+        difficulty: str | None = None,
+        background: str | None = None,
+        keepsake: str | None = None,
+        skip_prologue: bool = False,
         **kwargs: Any,
     ) -> None:
         self.seed = int(seed)
         self.world: World = world if world is not None else World(seed=self.seed)
         populate_world(self.world)
+
+        if settings is not None:
+            self.settings = settings
+        elif SETTINGS_PATH.exists():
+            self.settings = load_settings(SETTINGS_PATH)
+        else:
+            self.settings = GameSettings()
+
+        if difficulty is not None and str(difficulty).strip().lower() in VALID_DIFFICULTIES:
+            self.settings.difficulty = str(difficulty).strip().lower()
+
+        if any(x is not None for x in (difficulty, background, keepsake)) or skip_prologue:
+            apply_new_game_setup(
+                self.world,
+                difficulty=difficulty or self.settings.difficulty,
+                background=background or "watch_veteran",
+                keepsake=keepsake or "coin_purse",
+                skip_prologue=skip_prologue,
+            )
 
         # Wire systems
         self.character_system = CharacterSystem(world=self.world, event_bus=self.world.event_bus, clock=self.world.clock)
@@ -97,8 +124,15 @@ class Game:
             for fac in list(w.factions.values()):
                 self.faction_ai.process_faction_turn(fac, world=w)
 
+        def _economy_tick(w: World, _elapsed: int = 0) -> None:
+            self.economy_system.process_daily_tick(world=w)
+
+        self._economy_tick_cb = _economy_tick
         self.simulation.register_system(FREQ_FACTION_DECISIONS, _faction_tick, name="faction_ai")
+        self.simulation.register_system(FREQ_ECONOMY, self._economy_tick_cb, name="economy_system")
         self.tutorial = TutorialManager(self.world)
+        self.debug_mode = DebugMode(self)
+        self.menu_engine = MenuEngine(self)
         self._rebind_world(self.world)
 
     def _rebind_world(self, world: World) -> None:
@@ -116,11 +150,24 @@ class Game:
             setattr(world, sys_name, sys_obj)
 
         self.simulation.world = world
+        if hasattr(self, "_economy_tick_cb"):
+            self.simulation.register_system(FREQ_ECONOMY, self._economy_tick_cb, name="economy_system")
         self.faction_ai.world = world
         self.faction_ai.event_bus = world.event_bus
         self.faction_ai.clock = world.clock
         self.faction_ai.rng = world.rng
         self.tutorial.world = world
+        if hasattr(self, "menu_engine") and self.menu_engine is not None:
+            self.menu_engine.reset()
+
+    def get_menu_screen(self) -> dict[str, Any]:
+        return self.menu_engine.get_screen()
+
+    def select_menu(self, key: str | int) -> dict[str, Any]:
+        return self.menu_engine.select(str(key))
+
+    def start_dialogue(self, npc_id: str) -> dict[str, Any]:
+        return self.menu_engine.start_dialogue(npc_id)
 
     # ------------------------------------------------------------------
     # Prologue & Tutorial Delegate API (PROJECT.md Interface Contracts)
