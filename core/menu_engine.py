@@ -379,11 +379,11 @@ class MenuEngine:
         session = self.active_clash
         assert session is not None
         party_lines = [
-            f"  {c.name}: Consc {getattr(c, 'consciousness', 100):.0f}% | Status {getattr(c, 'status', 'alive')}"
+            f"  {c.name}: Consc {getattr(c, 'consciousness', 100):.0f}% | Body {getattr((getattr(c, 'body', None) or {}).get('torso'), 'integrity', 100):.0f}% | Status {getattr(c, 'status', 'alive')}"
             for c in session.party
         ]
         enemy_lines = [
-            f"  {e.name}: Consc {getattr(e, 'consciousness', 100):.0f}% | Morale {getattr(e, 'morale', 75):.0f} ({getattr(e, 'morale_state', 'confident')})"
+            f"  {e.name}: Consc {getattr(e, 'consciousness', 100):.0f}% | Body {getattr((getattr(e, 'body', None) or {}).get('torso'), 'integrity', 100):.0f}% | Morale {getattr(e, 'morale', 75):.0f} ({getattr(e, 'morale_state', 'confident')})"
             for e in session.enemies
         ]
         log_lines = session.combat_log[-5:] if session.combat_log else ["Clash ready."]
@@ -452,11 +452,13 @@ class MenuEngine:
                 return {"success": False, "message": self.last_message, "screen": self.get_screen()}
             res = self.game.combat_system.resolve_clash_turn(session, choice, world=self.game.world)
 
-        log = res.get("combat_log") or []
-        self.last_message = log[-1] if log else f"Clash status: {res.get('status')}"
+        turn_log = res.get("turn_log") or res.get("combat_log") or []
+        self.last_message = " | ".join(str(line) for line in turn_log) if turn_log else f"Clash status: {res.get('status')}"
         if session.status != "active":
             self.active_clash = None
             self._aim_submenu = False
+            if getattr(self.game, "combat_system", None) is not None:
+                self.game.combat_system.active_encounter = None
         return {"success": True, "message": self.last_message, "combat_result": res, "screen": self.get_screen()}
 
     # ------------------------------------------------------------------

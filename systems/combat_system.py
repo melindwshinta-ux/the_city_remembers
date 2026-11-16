@@ -454,9 +454,25 @@ class CombatSystem:
                     def_part_id = "torso" if "torso" in defender.body else next(iter(defender.body.keys()))
                 def_part = defender.body[def_part_id]
                 spell_dmg = float(spell_power)
+                if self.world and getattr(self.world, "flags", {}).get("god_mode") and getattr(defender, "id", "") == "player":
+                    spell_dmg = 0.0
                 def_part.integrity = max(0.0, float(def_part.integrity) - spell_dmg)
                 if def_part.integrity < 50.0:
                     def_part.functional = False
+                if spell_dmg > 0.0:
+                    consc_drop = max(2.0, spell_dmg * 0.65)
+                    defender.consciousness = max(0.0, float(getattr(defender, "consciousness", 100.0)) - consc_drop)
+                    if hasattr(defender, "morale"):
+                        morale_drop = max(2.0, spell_dmg * 0.35)
+                        new_m = max(0.0, float(getattr(defender, "morale", 75.0)) - morale_drop)
+                        self.evaluate_morale_state(defender, morale_value=new_m)
+                if (
+                    (def_part.vital and def_part.integrity <= 0.0)
+                    or (def_part_id in ("torso", "head") and def_part.integrity <= 0.0)
+                    or float(getattr(defender, "consciousness", 100.0)) <= 0.0
+                ):
+                    defender.consciousness = 0.0
+                    defender.status = "incapacitated"
                 inj_type = "nerve_damage" if kwargs.get("damage_type") == "magic" else "burn"
                 severity = min(1.0, max(0.1, spell_dmg / 50.0))
                 def_part.injuries.append(
@@ -491,6 +507,7 @@ class CombatSystem:
             return {
                 "success": True,
                 "command": "spellcasting",
+                "damage": float(spell_power) if defender is not None else 0.0,
                 "corruption": corruption,
                 "overloaded": overloaded,
             }
@@ -658,6 +675,10 @@ class CombatSystem:
             effective_damage = max(1.0, effective_damage * 0.5)
             self._guarding_ids.discard(defender.id)
 
+        # God Mode protection for player
+        if self.world and getattr(self.world, "flags", {}).get("god_mode") and getattr(defender, "id", "") == "player":
+            effective_damage = 0.0
+
         # 6. Apply injury & functional consequence
         part.integrity = max(0.0, part.integrity - effective_damage)
         injury_type = "deep_cut" if getattr(weapon, "damage_type", "cutting") == "cutting" else "compound_fracture"
@@ -693,11 +714,29 @@ class CombatSystem:
                 )
             )
 
+            # Propagate trauma into consciousness & morale so every hit visibly impacts combatant state
+            consc_drop = max(2.0, effective_damage * 0.7)
+            if hit_loc in ("head", "skull", "brain", "neck", "throat"):
+                consc_drop *= 1.35
+            cur_consc = float(getattr(defender, "consciousness", 100.0))
+            defender.consciousness = max(0.0, cur_consc - consc_drop)
+
+            if hasattr(defender, "morale"):
+                morale_drop = max(2.0, effective_damage * 0.35)
+                new_m = max(0.0, float(getattr(defender, "morale", 75.0)) - morale_drop)
+                self.evaluate_morale_state(defender, morale_value=new_m)
+
         if part.integrity < 50.0:
             part.functional = False
 
+        if (part.vital and part.integrity <= 0.0) or (
+            hit_loc in ("torso", "head") and part.integrity <= 0.0
+        ) or float(getattr(defender, "consciousness", 100.0)) <= 0.0:
+            defender.consciousness = 0.0
+            defender.status = "incapacitated"
+
         # Emit events
-        if self.event_bus:
+        if self.event_bus and effective_damage > 0.0:
             ev_type = "LIMB_INJURED" if "arm" in hit_loc or "leg" in hit_loc else "CHARACTER_INJURED"
             self.event_bus.emit(
                 GameEvent(
@@ -723,6 +762,9 @@ class CombatSystem:
             "hit_location": hit_loc,
             "effective_damage": effective_damage,
             "injury_applied": injury_type,
+            "defender_consciousness": float(getattr(defender, "consciousness", 100.0)),
+            "defender_part_integrity": float(part.integrity),
+            "defender_morale": float(getattr(defender, "morale", 75.0)),
         }
 
     def execute_attack(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -775,10 +817,12 @@ class CombatSystem:
         world: Any = None,
     ) -> ClashSession:
         """Create a streamlined ClashSession wrapping an Encounter."""
-        enc = self.create_encounter(party=party, enemies=enemies)
+        enemy_ids = {e.id for e in enemies}
+        clean_party = [p for p in party if p.id not in enemy_ids]
+        enc = self.create_encounter(party=clean_party, enemies=enemies)
         session = ClashSession(
             encounter=enc,
-            party=list(party),
+            party=list(clean_party),
             enemies=list(enemies),
             victor_faction=victor_faction,
         )
@@ -805,6 +849,28 @@ class CombatSystem:
             )
         return None
 
+    def _apply_bleed_tick(self, combatants: list[Character]) -> list[str]:
+        """Apply minor end-of-round consciousness loss from untreated bleeding wounds."""
+        notes: list[str] = []
+        for actor in combatants:
+            if self._is_incapacitated(actor):
+                continue
+            if self.world and getattr(self.world, "flags", {}).get("god_mode") and getattr(actor, "id", "") == "player":
+                continue
+            total_bleed = 0.0
+            for part in (getattr(actor, "body", None) or {}).values():
+                for inj in getattr(part, "injuries", []) or []:
+                    if not getattr(inj, "treated", False):
+                        total_bleed += float(getattr(inj, "bleeding", 0.0) or 0.0)
+            if total_bleed > 0.0:
+                bleed_loss = min(6.0, round(total_bleed * 3.0, 1))
+                if bleed_loss >= 0.5:
+                    actor.consciousness = max(0.0, float(getattr(actor, "consciousness", 100.0)) - bleed_loss)
+                    if actor.consciousness <= 0.0:
+                        actor.status = "incapacitated"
+                    notes.append(f"{actor.name} bleeds (-{bleed_loss:.1f}% Consc)")
+        return notes
+
     def resolve_clash_turn(
         self,
         session: ClashSession,
@@ -816,28 +882,58 @@ class CombatSystem:
     ) -> dict[str, Any]:
         """Resolve one round of [1]-[7] & [0] clash combat and update the 5-line combat_log."""
         if session.status != "active":
-            return {"status": session.status, "round": session.round_number, "combat_log": list(session.combat_log)}
+            return {
+                "status": session.status,
+                "round": session.round_number,
+                "combat_log": list(session.combat_log),
+                "turn_log": [],
+            }
 
         active_world = world or self.world
         rng = getattr(active_world, "rng", None) or self.rng
         act = str(action).strip().lower()
+        turn_events: list[str] = []
+
+        def _log(msg: str) -> None:
+            turn_events.append(msg)
+            session.add_log(msg)
+
+        diff = str((getattr(active_world, "flags", {}) or {}).get("difficulty", "balanced")).strip().lower()
+        from core.settings import get_difficulty_modifiers
+
+        diff_mods = get_difficulty_modifiers(diff)
+        player_dmg_mult = 1.2 if diff == "story" else 1.0
+        enemy_diff_mult = float(diff_mods.get("incoming_damage_mult", 1.0))
 
         living_party = [c for c in session.party if not self._is_incapacitated(c)]
         living_enemies = [e for e in session.enemies if not self._is_incapacitated(e) and getattr(e, "morale_state", "") != "routing"]
         if not living_party:
             session.status = "defeat"
             session.outcome = self.resolve_player_defeat(world=active_world, victor_faction=session.victor_faction)
-            return {"status": session.status, "outcome": session.outcome, "combat_log": list(session.combat_log)}
+            self.active_encounter = None
+            return {
+                "status": session.status,
+                "outcome": session.outcome,
+                "combat_log": list(session.combat_log),
+                "turn_log": turn_events,
+            }
         if not living_enemies:
             session.status = "victory"
             session.outcome = {"result": "enemies_defeated"}
-            return {"status": session.status, "outcome": session.outcome, "combat_log": list(session.combat_log)}
+            self.active_encounter = None
+            return {
+                "status": session.status,
+                "outcome": session.outcome,
+                "combat_log": list(session.combat_log),
+                "turn_log": turn_events,
+            }
 
         player = living_party[0]
         target = living_enemies[min(max(0, int(target_idx)), len(living_enemies) - 1)]
         weapon = self._get_primary_weapon(player, world=active_world)
         action_res: dict[str, Any] = {}
         skip_enemy_turn = False
+        allow_ally_assist = False
 
         # [0] Retreat / Non-lethal Surrender
         if act in ("0", "retreat", "surrender"):
@@ -845,23 +941,44 @@ class CombatSystem:
                 defeat_res = self.resolve_player_defeat(world=active_world, victor_faction=session.victor_faction)
                 session.status = "surrendered"
                 session.outcome = defeat_res
-                session.add_log(f"Party surrenders: {defeat_res['description']}")
-                return {"status": session.status, "outcome": defeat_res, "combat_log": list(session.combat_log)}
+                self.active_encounter = None
+                _log(f"Party surrenders: {defeat_res['description']}")
+                return {
+                    "status": session.status,
+                    "outcome": defeat_res,
+                    "combat_log": list(session.combat_log),
+                    "turn_log": turn_events,
+                }
             roll = rng.random("clash_retreat") if rng is not None else 0.5
             if roll >= 0.25:
                 session.status = "retreated"
                 session.outcome = {"result": "retreated"}
-                session.add_log("Your party breaks contact and retreats safely.")
-                return {"status": session.status, "outcome": session.outcome, "combat_log": list(session.combat_log)}
-            session.add_log("Retreat failed! Enemies press the attack!")
+                self.active_encounter = None
+                _log("Your party breaks contact and retreats safely.")
+                return {
+                    "status": session.status,
+                    "outcome": session.outcome,
+                    "combat_log": list(session.combat_log),
+                    "turn_log": turn_events,
+                }
+            _log("Retreat failed! Enemies press the attack!")
             action_res = {"retreat": False}
 
         # [1] Balanced Strike
         elif act in ("1", "balanced", "attack"):
-            res = self.resolve_attack(player, target, weapon=weapon, command="attack", target_part="torso", force_hit=True)
+            res = self.resolve_attack(
+                player,
+                target,
+                weapon=weapon,
+                command="attack",
+                target_part="torso",
+                force_hit=True,
+                damage_mult=player_dmg_mult,
+            )
             dmg = float(res.get("effective_damage", 0.0))
-            session.add_log(f"{player.name} strikes {target.name} for {dmg:.1f} dmg.")
+            _log(f"{player.name} strikes {target.name} for {dmg:.1f} dmg ({target.name} Consc {target.consciousness:.0f}%).")
             action_res = res
+            allow_ally_assist = True
 
         # [2] Heavy Brutal Assault (+35% dmg, lower defense)
         elif act in ("2", "heavy", "heavy_attack"):
@@ -873,11 +990,14 @@ class CombatSystem:
                 command="attack",
                 target_part="torso",
                 force_hit=True,
-                damage_mult=1.35,
+                damage_mult=1.35 * player_dmg_mult,
             )
             dmg = float(res.get("effective_damage", 0.0))
-            session.add_log(f"{player.name} unleashes Heavy Assault on {target.name} ({dmg:.1f} dmg, defense lowered)!")
+            _log(
+                f"{player.name} unleashes Heavy Assault on {target.name} ({dmg:.1f} dmg, {target.name} Consc {target.consciousness:.0f}%, def lowered)!"
+            )
             action_res = res
+            allow_ally_assist = True
 
         # [3] Aimed Limb / Organ Strike
         elif act in ("3", "aimed", "aim"):
@@ -890,16 +1010,27 @@ class CombatSystem:
                 roll = rng.random("clash_aim_head") if rng is not None else 0.5
                 hit_ok = roll < 0.72
             if hit_ok:
-                res = self.resolve_attack(player, target, weapon=weapon, command="attack", target_part=part_id, force_hit=True)
+                res = self.resolve_attack(
+                    player,
+                    target,
+                    weapon=weapon,
+                    command="attack",
+                    target_part=part_id,
+                    force_hit=True,
+                    damage_mult=player_dmg_mult,
+                )
                 if resolved_aim == "arms":
                     session.crippled_enemies.add(target.id)
                 elif resolved_aim == "legs":
                     session.pinned_enemies.add(target.id)
-                session.add_log(f"Aimed {resolved_aim} strike hits {target.name}'s {part_id} ({res.get('effective_damage', 0):.1f} dmg)!")
+                _log(
+                    f"Aimed {resolved_aim} strike hits {target.name}'s {part_id} ({res.get('effective_damage', 0):.1f} dmg, Consc {target.consciousness:.0f}%)!"
+                )
                 action_res = res
             else:
-                session.add_log(f"Aimed strike at {target.name}'s head misses narrowly!")
+                _log(f"Aimed strike at {target.name}'s head misses narrowly!")
                 action_res = {"hit": False, "hit_location": "head", "effective_damage": 0.0}
+            allow_ally_assist = True
 
         # [4] Defensive Stance & Rally Party
         elif act in ("4", "defend", "guard", "rally"):
@@ -907,7 +1038,7 @@ class CombatSystem:
                 session.guarding_ids.add(member.id)
                 self._guarding_ids.add(member.id)
             session.party_morale_bonus = min(50.0, session.party_morale_bonus + 10.0)
-            session.add_log(f"{player.name} raises Defensive Stance & rallies party (incoming dmg halved, +10 morale).")
+            _log(f"{player.name} raises Defensive Stance & rallies party (incoming dmg halved, +10 morale).")
             action_res = {"guarding": True, "party_morale_bonus": session.party_morale_bonus}
 
         # [5] Field Triage & Bandage
@@ -917,8 +1048,8 @@ class CombatSystem:
                 key=lambda c: float(getattr(c, "consciousness", 100.0)),
             )
             res = self.execute_tactical_action(attacker=player, defender=patient, command="apply_bandage")
-            session.add_log(
-                f"Field triage on {patient.name}: stopped {res.get('bleeding_stopped', 0)} bleeds, consciousness {res.get('consciousness', 100):.0f}%."
+            _log(
+                f"Field triage on {patient.name}: stopped {res.get('bleeding_stopped', 0)} bleeds, Consc {res.get('consciousness', 100):.0f}%."
             )
             action_res = res
 
@@ -930,14 +1061,16 @@ class CombatSystem:
             )
             if mage is not None:
                 res = self.execute_tactical_action(attacker=mage, defender=target, command="spellcasting", spell_power=22.0, damage_type="magic")
-                session.add_log(f"{mage.name} channels an Arcane Surge into {target.name}!")
+                _log(
+                    f"{mage.name} channels Arcane Surge into {target.name} ({res.get('damage', 22.0):.0f} dmg, Consc {target.consciousness:.0f}%)!"
+                )
                 action_res = res
             else:
                 disarm_res = self.execute_tactical_action(attacker=player, defender=target, command="disarm")
                 if hasattr(target, "morale"):
                     new_m = max(0.0, float(target.morale) - 15.0)
                     self.evaluate_morale_state(target, morale_value=new_m)
-                session.add_log(f"{player.name} uses a dirty tactical trick on {target.name}!")
+                _log(f"{player.name} rattles {target.name} with a dirty trick (Morale {float(getattr(target, 'morale', 75.0)):.0f})!")
                 action_res = {"trick": True, "disarm": disarm_res}
 
         # [7] Demand Surrender
@@ -947,18 +1080,51 @@ class CombatSystem:
                 for e in living_enemies:
                     self.evaluate_morale_state(e, morale_value=0.0)
                 session.status = "victory"
-                session.outcome = {"result": "enemy_surrendered", "surrendered_count": len(living_enemies)}
-                session.add_log("Broken and terrified, the enemies throw down their weapons and surrender!")
-                return {"status": session.status, "outcome": session.outcome, "combat_log": list(session.combat_log)}
+                loot_gold = round(20.0 * float(diff_mods.get("gold_mult", 1.0)), 1)
+                if active_world and getattr(active_world, "player", None) is not None:
+                    p_char = active_world.player
+                    p_char.needs["wealth"] = float(p_char.needs.get("wealth", 0.0)) + loot_gold
+                session.outcome = {"result": "enemy_surrendered", "surrendered_count": len(living_enemies), "loot_gold": loot_gold}
+                self.active_encounter = None
+                _log(f"Enemies throw down their weapons and surrender! (+{loot_gold:.0f}g spoils)")
+                return {
+                    "status": session.status,
+                    "outcome": session.outcome,
+                    "combat_log": list(session.combat_log),
+                    "turn_log": turn_events,
+                }
             else:
                 for e in living_enemies:
                     if hasattr(e, "morale"):
                         self.evaluate_morale_state(e, morale_value=max(0.0, float(e.morale) - 5.0))
-                session.add_log("Enemies refuse to surrender and steel themselves!")
+                lead_m = float(getattr(living_enemies[0], "morale", 75.0))
+                _log(f"Enemies refuse surrender and steel themselves (Morale {lead_m:.0f})!")
                 action_res = {"surrendered": False}
 
         else:
-            return {"status": session.status, "error": f"Unknown clash action: {action}", "combat_log": list(session.combat_log)}
+            return {
+                "status": session.status,
+                "error": f"Unknown clash action: {action}",
+                "combat_log": list(session.combat_log),
+                "turn_log": turn_events,
+            }
+
+        # Modest companion flanking assist on offensive actions [1]-[3]
+        if allow_ally_assist and len(living_party) > 1 and not self._is_incapacitated(target):
+            ally = living_party[1]
+            a_weapon = self._get_primary_weapon(ally, world=active_world)
+            a_res = self.resolve_attack(
+                ally,
+                target,
+                weapon=a_weapon,
+                command="attack",
+                target_part="torso",
+                force_hit=True,
+                damage_mult=0.35 * player_dmg_mult,
+            )
+            a_dmg = float(a_res.get("effective_damage", 0.0))
+            if a_dmg > 0.0:
+                _log(f"{ally.name} flanks {target.name} for {a_dmg:.1f} dmg (Consc {target.consciousness:.0f}%).")
 
         # Check if all enemies incapacitated
         for e in session.enemies:
@@ -972,14 +1138,20 @@ class CombatSystem:
         still_standing = [e for e in session.enemies if not self._is_incapacitated(e) and getattr(e, "morale_state", "") != "routing"]
         if not still_standing:
             session.status = "victory"
-            session.outcome = {"result": "enemies_defeated"}
-            session.add_log("Victory! All enemies are neutralized.")
+            loot_gold = round(20.0 * float(diff_mods.get("gold_mult", 1.0)), 1)
+            if active_world and getattr(active_world, "player", None) is not None:
+                p_char = active_world.player
+                p_char.needs["wealth"] = float(p_char.needs.get("wealth", 0.0)) + loot_gold
+            session.outcome = {"result": "enemies_defeated", "loot_gold": loot_gold}
+            self.active_encounter = None
+            _log(f"Victory! All enemies neutralized (+{loot_gold:.0f}g spoils).")
             return {
                 "status": session.status,
                 "round": session.round_number,
                 "player_action": action_res,
                 "outcome": session.outcome,
                 "combat_log": list(session.combat_log),
+                "turn_log": turn_events,
             }
 
         # Enemy counterattack turn
@@ -990,7 +1162,7 @@ class CombatSystem:
                     break
                 defender = living_party[0]
                 e_weapon = self._get_primary_weapon(enemy, world=active_world)
-                mult = 0.5 if enemy.id in session.crippled_enemies else 1.0
+                mult = (0.5 if enemy.id in session.crippled_enemies else 1.0) * enemy_diff_mult
                 if defender.id in session.exposed_ids:
                     mult *= 1.25
                 e_res = self.resolve_attack(
@@ -1002,19 +1174,37 @@ class CombatSystem:
                     force_hit=True,
                     damage_mult=mult,
                 )
-                session.add_log(f"{enemy.name} strikes {defender.name} for {e_res.get('effective_damage', 0):.1f} dmg.")
+                e_dmg = float(e_res.get("effective_damage", 0.0))
+                _log(f"{enemy.name} strikes {defender.name} for {e_dmg:.1f} dmg ({defender.name} Consc {defender.consciousness:.0f}%).")
 
-        # Check party defeat
+        # End-of-round untreated bleed ticks
+        bleed_notes = self._apply_bleed_tick(list(session.party) + list(still_standing))
+        if bleed_notes:
+            _log("Bleed: " + ", ".join(bleed_notes[:3]))
+
+        # Re-check victory/defeat after bleed ticks
+        still_standing = [e for e in session.enemies if not self._is_incapacitated(e) and getattr(e, "morale_state", "") != "routing"]
+        if not still_standing:
+            session.status = "victory"
+            loot_gold = round(20.0 * float(diff_mods.get("gold_mult", 1.0)), 1)
+            if active_world and getattr(active_world, "player", None) is not None:
+                p_char = active_world.player
+                p_char.needs["wealth"] = float(p_char.needs.get("wealth", 0.0)) + loot_gold
+            session.outcome = {"result": "enemies_defeated", "loot_gold": loot_gold}
+            self.active_encounter = None
+            _log(f"Victory! Enemies collapse from wounds (+{loot_gold:.0f}g spoils).")
+
         for member in session.party:
             if hasattr(member, "body") and member.body:
                 torso = member.body.get("torso")
                 if torso and torso.integrity <= 0.0:
                     member.consciousness = 0.0
                     member.status = "incapacitated"
-        if not [c for c in session.party if not self._is_incapacitated(c)]:
+        if session.status == "active" and not [c for c in session.party if not self._is_incapacitated(c)]:
             session.status = "defeat"
             session.outcome = self.resolve_player_defeat(world=active_world, victor_faction=session.victor_faction)
-            session.add_log(f"Party defeated: {session.outcome.get('description', '')}")
+            self.active_encounter = None
+            _log(f"Party defeated: {session.outcome.get('description', '')}")
 
         session.exposed_ids.clear()
         session.guarding_ids.clear()
@@ -1026,4 +1216,5 @@ class CombatSystem:
             "player_action": action_res,
             "outcome": session.outcome,
             "combat_log": list(session.combat_log),
+            "turn_log": turn_events,
         }

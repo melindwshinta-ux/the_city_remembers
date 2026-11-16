@@ -440,7 +440,15 @@ class DialogueEngine:
         elif choice == "8":
             self.enter_combat = True
             self.closed = True
-            party = [world.characters[cid] for cid in (world.player_party or ["player"]) if cid in world.characters]
+            if self.npc_id in world.player_party:
+                world.player_party.remove(self.npc_id)
+            if self.npc_id in world.companions:
+                world.companions[self.npc_id].in_party = False
+            party = [
+                world.characters[cid]
+                for cid in (world.player_party or ["player"])
+                if cid in world.characters and cid != self.npc_id
+            ]
             if not party and world.player is not None:
                 party = [world.player]
             victor_fac = getattr(npc, "faction_id", None) or "city_guard"

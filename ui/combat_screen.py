@@ -5,11 +5,30 @@ from __future__ import annotations
 from typing import Any
 
 
+def _format_injury_label(inj: Any) -> str:
+    """Format an Injury object or string into a clean human-readable label."""
+    if isinstance(inj, str):
+        return inj
+    inj_type = getattr(inj, "injury_type", None) or "wound"
+    label = str(inj_type).replace("_", " ").title()
+    bleeding = float(getattr(inj, "bleeding", 0.0) or 0.0)
+    treated = bool(getattr(inj, "treated", False))
+    if bleeding > 0.0 and not treated:
+        return f"{label} (Bleed)"
+    if getattr(inj, "permanent", False):
+        return f"{label} (Perm)"
+    return label
+
+
 def _format_combatant_block(char: Any, combat_sys: Any, world: Any, is_enemy: bool = False) -> list[str]:
-    """Build compact status lines for a party member or enemy."""
+    """Build compact (<=4 line) status block for a party member or enemy."""
     name = getattr(char, "name", str(getattr(char, "id", "Unknown")))
     consc = float(getattr(char, "consciousness", 100.0))
     status = getattr(char, "status", "alive")
+
+    body = getattr(char, "body", None) or {}
+    torso = body.get("torso")
+    body_hp = float(getattr(torso, "integrity", 100.0)) if torso is not None else 100.0
 
     if is_enemy and combat_sys is not None and hasattr(combat_sys, "evaluate_morale_state"):
         morale_state = combat_sys.evaluate_morale_state(char)
@@ -22,31 +41,60 @@ def _format_combatant_block(char: Any, combat_sys: Any, world: Any, is_enemy: bo
     equip = getattr(char, "equipment", None) or {}
     items = getattr(world, "items", {}) if world is not None else {}
     w_id = equip.get("weapon") or equip.get("main_hand") or equip.get("primary")
-    a_id = equip.get("armor") or equip.get("torso") or equip.get("chest")
-    w_name = getattr(items.get(w_id), "name", w_id) if w_id else "Unarmed"
-    a_name = getattr(items.get(a_id), "name", a_id) if a_id else "No Armor"
+    if w_id:
+        w_name = getattr(items.get(w_id), "name", w_id)
+    elif combat_sys is not None and hasattr(combat_sys, "_get_primary_weapon"):
+        fallback_w = combat_sys._get_primary_weapon(char, world=world)
+        w_name = getattr(fallback_w, "name", "Unarmed") if fallback_w is not None else "Unarmed"
+    else:
+        w_name = "Unarmed"
 
     wounds: list[str] = []
-    body = getattr(char, "body", None) or {}
     for part_id, part in body.items():
         part_inj = list(getattr(part, "injuries", []) or [])
         bleeding = float(getattr(part, "bleeding_rate", 0.0))
         functional = bool(getattr(part, "functional", True))
         label = str(part_id).replace("_", " ").title()
         if part_inj:
-            wounds.append(f"{label}: {', '.join(str(i) for i in part_inj)}")
+            counts: dict[str, int] = {}
+            for inj in part_inj:
+                lbl = _format_injury_label(inj)
+                counts[lbl] = counts.get(lbl, 0) + 1
+            parts_txt = [f"{lbl} x{cnt}" if cnt > 1 else lbl for lbl, cnt in list(counts.items())[:2]]
+            wounds.append(f"{label}: {', '.join(parts_txt)}")
         elif bleeding > 0.0:
             wounds.append(f"{label}: Bleeding")
         elif not functional:
             wounds.append(f"{label}: Disabled")
-    wound_str = "; ".join(wounds[:3]) if wounds else "None"
+    wound_str = "; ".join(wounds[:2]) if wounds else "None"
 
     return [
         f"{name} [{status}]",
-        f"  Consc: {consc:.0f}% | {morale_str}",
-        f"  Gear: {w_name} / {a_name}",
+        f"  Consc: {consc:.0f}% | Body: {body_hp:.0f}%",
+        f"  {morale_str} | {w_name}",
         f"  Wounds: {wound_str}",
     ]
+
+
+def _wrap_column(lines: list[str], width: int = 38) -> list[str]:
+    """Wrap each line to at most `width` chars so side-by-side columns stay aligned."""
+    import textwrap
+
+    wrapped: list[str] = []
+    for line in lines:
+        if len(line) <= width:
+            wrapped.append(line)
+        else:
+            indent = "    " if line.startswith("  ") else ""
+            chunks = textwrap.wrap(
+                line,
+                width=width,
+                subsequent_indent=indent,
+                break_long_words=True,
+                break_on_hyphens=True,
+            )
+            wrapped.extend(chunks or [line[:width]])
+    return wrapped
 
 
 def render_combat_view(game_session: Any) -> str:
@@ -94,12 +142,16 @@ def render_combat_view(game_session: Any) -> str:
     for enemy in enemy_list:
         right_lines.extend(_format_combatant_block(enemy, combat_sys, world, is_enemy=True))
 
-    max_rows = max(len(left_lines), len(right_lines))
+    col_w = 38
+    left_wrapped = _wrap_column(left_lines, width=col_w)
+    right_wrapped = _wrap_column(right_lines, width=col_w)
+
+    max_rows = max(len(left_wrapped), len(right_wrapped))
     side_by_side: list[str] = []
     for idx in range(max_rows):
-        l_txt = left_lines[idx] if idx < len(left_lines) else ""
-        r_txt = right_lines[idx] if idx < len(right_lines) else ""
-        side_by_side.append(f"{l_txt:<38} | {r_txt}")
+        l_txt = left_wrapped[idx] if idx < len(left_wrapped) else ""
+        r_txt = right_wrapped[idx] if idx < len(right_wrapped) else ""
+        side_by_side.append(f"{l_txt:<{col_w}} | {r_txt}")
 
     round_num = getattr(clash_session, "round_number", 1) if clash_session is not None else 1
     clash_status = getattr(clash_session, "status", "active") if clash_session is not None else "active"

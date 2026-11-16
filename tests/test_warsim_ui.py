@@ -229,3 +229,89 @@ async def test_warsim_dialogue_and_combat_clash_viewport_at_80x24(tmp_path: Path
         await pilot.pause()
         clash_text_after = str(app.query_one("#view-content").content)
         assert "Combat Log" in clash_text_after or game.menu_engine.active_clash is None
+
+
+@pytest.mark.asyncio
+async def test_warsim_full_combat_clash_click_through_to_victory(tmp_path: Path) -> None:
+    """Click through full Combat Clash: verify no duplicate party/enemy, visible Consc/Body/Morale/Wound changes, and victory spoils."""
+    db = Database(tmp_path / "full_clash.db")
+    sm = SaveManager(db)
+    game = Game(db=db, save_manager=sm, skip_prologue=True)
+    marcus = game.world.characters["comp_marcus"]
+    player = game.world.player
+    gold_start = float(player.needs.get("wealth", 0.0))
+
+    app = create_app(game=game, show_prologue=False, show_title=False, warsim_mode=True)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+
+        # Enter Talk [2] -> Speak with Marcus [1] -> Provoke [8]
+        await pilot.click("#action-2")
+        await pilot.pause()
+        await pilot.click("#action-1")
+        await pilot.pause()
+        await pilot.click("#action-8")
+        await pilot.pause()
+
+        session = game.menu_engine.active_clash
+        assert session is not None
+        assert marcus.id not in [c.id for c in session.party]
+        assert marcus.id in [e.id for e in session.enemies]
+
+        initial_text = str(app.query_one("#view-content").content)
+        assert "Consc: 100%" in initial_text
+        assert "Body: 100%" in initial_text
+        assert "Injury(" not in initial_text
+
+        # Round 1: [1] Balanced Strike via click
+        await pilot.click("#action-1")
+        await pilot.pause()
+        assert marcus.consciousness < 100.0
+        assert marcus.body["torso"].integrity < 100.0
+        assert marcus.morale < 75.0
+        assert player.consciousness < 100.0
+        assert player.body["torso"].integrity < 100.0
+        assert "Injury(" not in str(app.query_one("#view-content").content)
+        assert "Deep Cut" in str(app.query_one("#view-content").content)
+
+        # Round 2: [2] Heavy Brutal Assault via click
+        consc_before_heavy = marcus.consciousness
+        await pilot.click("#action-2")
+        await pilot.pause()
+        assert marcus.consciousness < consc_before_heavy
+
+        # Round 3: [3] Aimed Limb -> [2] Arms via click
+        await pilot.click("#action-3")
+        await pilot.pause()
+        await pilot.click("#action-2")
+        await pilot.pause()
+        assert marcus.id in session.crippled_enemies
+
+        # Round 4: [4] Defensive Stance & Rally
+        await pilot.click("#action-4")
+        await pilot.pause()
+        assert session.party_morale_bonus > 0.0
+
+        # Round 5: [5] Field Triage & Bandage
+        consc_before_triage = player.consciousness
+        await pilot.click("#action-5")
+        await pilot.pause()
+        assert player.consciousness >= consc_before_triage
+
+        # Round 6: [6] Tactical Trick
+        morale_before_trick = marcus.morale
+        await pilot.click("#action-6")
+        await pilot.pause()
+        assert marcus.morale < morale_before_trick
+
+        # Finish the fight using [2] Heavy Assault until victory
+        for _ in range(10):
+            if game.menu_engine.active_clash is None:
+                break
+            await pilot.click("#action-2")
+            await pilot.pause()
+
+        assert game.menu_engine.active_clash is None
+        assert game.combat_system.active_encounter is None
+        assert session.status == "victory"
+        assert float(player.needs.get("wealth", 0.0)) > gold_start
